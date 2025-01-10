@@ -177,7 +177,7 @@ def get_video_resolution(input_file):
         return 0, 0
 
     if "streams" not in data or not data["streams"]:
-        logging.info(f"No 'streams' in ffprobe response for file: {path}")
+        logging.info(f"No 'streams' in ffprobe response for file: {input_file}")
         return 0, 0
 
     try:
