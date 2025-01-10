@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM debian
+FROM debian:bookworm-slim
 ARG TARGETARCH
 
 # Verify TARGETARCH
@@ -29,7 +29,9 @@ RUN apt-get update \
     && apt-get install --no-install-recommends --no-install-suggests -y \
        ocl-icd-libopencl1 wget ca-certificates gnupg curl apt-transport-https \
     && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/debian-jellyfin.gpg \
-    && echo "deb [arch=${TARGETARCH}] https://repo.jellyfin.org/master/debian bookworm main" > /etc/apt/sources.list.d/jellyfin.list
+    && echo "deb [arch=${TARGETARCH}] https://repo.jellyfin.org/master/debian bookworm main" > /etc/apt/sources.list.d/jellyfin.list \
+    && apt-get update \
+    && apt-get upgrade -y
 
 # ARM64-specific setup
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
@@ -57,16 +59,14 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
     && rm -rf intel-compute-runtime; \
 fi
 
-RUN apt-get update \
-    && apt-get install --no-install-recommends --no-install-suggests -y jellyfin-ffmpeg7 \
+# FFMPEG and python setup
+RUN apt-get install --no-install-recommends --no-install-suggests -y jellyfin-ffmpeg7 \
        openssl locales libfontconfig1 libfreetype6 python3 python3-pip python3-watchdog lsof \
-    && sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen \
-    && apt-get remove gnupg apt-transport-https --yes
+    && sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen
 
 # Cleanup
 RUN apt-get clean autoclean -y \
- && apt-get autoremove -y \
- && rm -rf /var/cache/apt/archives* /var/lib/apt/lists/*
+    && apt-get autoremove -y
 
 # Add FFmpeg to PATH
 ENV PATH="$JELLYFIN_FFMPEG_PATH:$PATH"

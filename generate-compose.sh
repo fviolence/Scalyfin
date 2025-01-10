@@ -7,11 +7,9 @@ OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY:-/home/cookie/scaler/output_dir}
 
 # Determine device mappings
 if [ "$GPU_ACCEL" = "amd" ]; then
-  USER_SETTING="0:0"
   DEVICES="# AMD GPU
       - /dev/dri/renderD128:/dev/dri/renderD128"
 elif [ "$GPU_ACCEL" = "rockchip" ]; then
-  USER_SETTING="1000:1000"
   DEVICES="# Rockchip VPU
       - /dev/dri:/dev/dri
       - /dev/dma_heap:/dev/dma_heap

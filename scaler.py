@@ -385,7 +385,7 @@ def build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, 
 
     # We'll assume software scaling for Rockchip (some SoCs might allow MPP-based scaling)
     scaled_width, scaled_height = calculate_scaled_resolution(width, height)
-    scale_filter = "scale={scaled_width}:{scaled_height}"
+    scale_filter = f"scale={scaled_width}:{scaled_height}"
 
     metadata_opts = ""
     if preserve_metadata:
@@ -421,7 +421,7 @@ def build_ffmpeg_command_software(input_file, output_file, preserve_metadata, wi
         video_quality = ""
 
     scaled_width, scaled_height = calculate_scaled_resolution(width, height)
-    scale_filter = "scale={scaled_width}:{scaled_height}"
+    scale_filter = f"scale={scaled_width}:{scaled_height}"
 
     metadata_opts = ""
     if preserve_metadata:
