@@ -1,0 +1,15 @@
+services:
+  scaler:
+    image: fviolence/scaler:latest
+    container_name: scaler
+    privileged: true
+    user: "0:0"
+    network_mode: 'host'
+    environment:
+      - GPU_ACCEL=${GPU_ACCEL}
+    volumes:
+      - ${WATCH_DIRECTORY}:/watch_dir
+      - ${OUTPUT_DIRECTORY}:/output_dir
+    devices:
+      ${DEVICES}
+    restart: unless-stopped
