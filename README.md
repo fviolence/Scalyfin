@@ -19,3 +19,9 @@ GPU_ACCEL - "amd" or "rockchip"
 WATCH_DIRECTORY - path to directory to watch for 4k videos
 OUTPUT_DIRECTORY - path to output directory with HD videos
 ```
+
+NOTE: For some reason, most likely due to mapping data volume to NFS, when deploying on personal PC with AMD GPU, container unable to render anything unless root user specified.
+Access to render device not an issue, passing groups or creating udev rules does not fix the issue - ffmpeg still fails with some strange errors not being able to read subtitles, even when they are disabled.
+```
+System.ArgumentException: Unsupported format: srt
+```

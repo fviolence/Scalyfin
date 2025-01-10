@@ -3,7 +3,7 @@ services:
     image: fviolence/scaler:latest
     container_name: scaler
     privileged: true
-    user: "0:0"
+    user: ${USER_SETTING}
     network_mode: 'host'
     environment:
       - GPU_ACCEL=${GPU_ACCEL}
