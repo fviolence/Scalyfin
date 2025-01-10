@@ -20,8 +20,8 @@ WATCH_DIRECTORY - path to directory to watch for 4k videos
 OUTPUT_DIRECTORY - path to output directory with HD videos
 ```
 
-NOTE: For some reason, most likely due to mapping data volume to NFS, when deploying on personal PC with AMD GPU, container unable to render anything unless root user specified.
-Access to render device not an issue, passing groups or creating udev rules does not fix the issue - ffmpeg still fails with some strange errors not being able to read subtitles, even when they are disabled.
+NOTE: For some reason, most likely due to the mapping of data volumes to NFS, when deployed on a personal PC with an AMD GPU, the container is unable to render anything unless the root user is specified.
+Render device access is not a problem, passing groups or creating udev rules does not solve the problem - ffmpeg still fails with some strange errors, unable to read subtitles even if they are disabled.
 ```
 System.ArgumentException: Unsupported format: srt
 ```
