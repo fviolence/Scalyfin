@@ -1,4 +1,4 @@
-## Scalyfin is a lightweight, Dockerized tool designed to scale 4K videos down to 1080p while preserving video quality and maintaining the original aspect ratio.
+## Scalyfin is a lightweight, dockerized Linux tool designed to scale 4K videos down to 1080p while preserving video quality and maintaining the original aspect ratio.
 #### Supports hardware-accelerated encoding with ffmpeg from the [Jellyfin](https://github.com/jellyfin/jellyfin-ffmpeg) repo using AMD (VAAPI) and Rockchip (RKMPP), ensuring efficient and fast transcoding. Fallback to software rendering if rendering fails. Preserves metadata and aspect ratio. Attempts to preserve one of 3 codecs: AV1, H.264 and HEVC, all others are converted to HEVC.
 
 ### Generate compose and deploy

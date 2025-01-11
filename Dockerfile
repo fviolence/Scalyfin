@@ -74,5 +74,5 @@ ENV PATH="$JELLYFIN_FFMPEG_PATH:$PATH"
 # Final runtime setup
 WORKDIR /app
 
-COPY scaler.py /app/scaler.py
-CMD ["python3", "/app/scaler.py"]
+COPY scalyfin.py /app/scalyfin.py
+CMD ["python3", "/app/scalyfin.py"]
