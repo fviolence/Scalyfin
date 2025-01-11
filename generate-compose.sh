@@ -3,7 +3,6 @@
 # Set default values for environment variables if not provided
 GPU_ACCEL=${GPU_ACCEL:-amd}
 WATCH_DIRECTORY=${WATCH_DIRECTORY:-/home/cookie/scaler/watch_dir}
-OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY:-/home/cookie/scaler/output_dir}
 
 # Determine device mappings
 if [ "$GPU_ACCEL" = "amd" ]; then
@@ -22,7 +21,7 @@ else
 fi
 
 # Export variables for envsubst
-export GPU_ACCEL DEVICES WATCH_DIRECTORY OUTPUT_DIRECTORY
+export GPU_ACCEL DEVICES WATCH_DIRECTORY
 
 # Generate docker-compose.yml
 envsubst < docker-compose.template.yml > docker-compose.yml

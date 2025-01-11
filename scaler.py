@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import os
+import tempfile
+import shutil
 import time
 import subprocess
 import threading
@@ -12,7 +14,6 @@ from watchdog.events import FileSystemEventHandler
 
 # ====================== CONFIGURATION =======================
 WATCH_DIRECTORY = os.getenv("WATCH_DIRECTORY", "/watch_dir")
-OUTPUT_DIRECTORY = os.getenv("OUTPUT_DIRECTORY", "/output_dir")
 
 # Toggle for GPU acceleration backends: "amd" or "rockchip"
 GPU_ACCEL = os.getenv("GPU_ACCEL", "undef").lower()
@@ -22,8 +23,8 @@ AMD_VAAPI_DEVICE = "/dev/dri/renderD128"
 # ROCKCHIP_DEVICE  = "" # not needed
 
 # Quality parameters
-QP_H264 = 22
-QP_HEVC = 23
+QP_H264 = 20
+QP_HEVC = 20
 CRF_AV1 = 25  # Used for AV1 (hardware or software)
 
 # Stability checking
@@ -39,7 +40,6 @@ def setup_logging():
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     logging.info(f"GPU_ACCEL set to: {GPU_ACCEL}")
     logging.info(f"Watching directory: {WATCH_DIRECTORY}")
-    logging.info(f"Output directory: {OUTPUT_DIRECTORY}")
 
 
 class VideoHandler(FileSystemEventHandler):
@@ -193,13 +193,15 @@ def get_video_resolution(input_file):
 
 def process_file(input_path):
     """
-    1) Determine source codec.
-    2) Build an FFmpeg command based on GPU_ACCEL and the codec.
-    3) Transcode to 1080p, preserving metadata, streams, etc.
+    1. Rename the original file.
+    2. Generate the output file path.
+    3. Transcode the video while preserving metadata and aspect ratio.
     """
-    output_path = build_output_path(input_path)
-    if os.path.exists(output_path):
-        logging.info(f"Output already exists, skipping: {output_path}")
+    temp_output_path = build_temp_path(input_path)
+    final_output_path = build_output_path(input_path)
+
+    if os.path.exists(final_output_path):
+        logging.info(f"Output already exists, skipping: {final_output_path}")
         return
 
     source_codec = get_video_codec(input_path)
@@ -208,31 +210,62 @@ def process_file(input_path):
         logging.error(f"Skipping {input_path}: Unable to determine resolution.")
         return
 
-    ffmpeg_cmd = build_ffmpeg_command(input_path, output_path, source_codec, width, height, preserve_metadata=True)
+    ffmpeg_cmd = build_ffmpeg_command(input_path, temp_output_path, source_codec, width, height, preserve_metadata=True)
 
-    logging.info(f"[PROCESS] {input_path} -> {output_path}")
+    logging.info(f"[PROCESS] {input_path} -> {temp_output_path}")
     try:
-        result = subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        logging.info(f"[DONE] {input_path}")
+        subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        logging.info(f"[DONE] {temp_output_path}")
+
+        # Move to final output path
+        logging.info(f"[MOVE] {temp_output_path} -> {final_output_path}")
+        shutil.move(temp_output_path, final_output_path)
+        rename_original_file(input_path)
     except subprocess.CalledProcessError as e:
         logging.error(f"[ERROR] {input_path}: Return code {e.returncode}\n{e.stderr}")
+    finally:
+        # Ensure temp file is cleaned if something went wrong
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
+            logging.info(f"Cleaned up temporary file: {temp_output_path}")
 
 
-def build_output_path(input_file):
+def rename_original_file(input_path):
     """
-    Preserves subdirectory structure in OUTPUT_DIRECTORY, appending '_1080p' to the filename.
+    Rename the original file by appending ' - 4k' to its name.
     """
-    rel_path = os.path.relpath(input_file, WATCH_DIRECTORY)  # e.g. subdir/video.mkv
-    base, ext = os.path.splitext(rel_path)
-    out_name = f"{base}_1080p{ext}"
-    output_file = os.path.join(OUTPUT_DIRECTORY, out_name)
+    dir_path, filename = os.path.split(input_path)
+    base, ext = os.path.splitext(filename)
+    new_name = f"{base.strip()} - 4k{ext}"
+    new_path = os.path.join(dir_path, new_name)
 
-    # Ensure subdirs exist
-    out_dir = os.path.dirname(output_file)
-    os.makedirs(out_dir, exist_ok=True)
+    if new_path != input_path:
+        logging.info(f"Renaming original file: {input_path} -> {new_path}")
+        shutil.move(input_path, new_path)
+    return new_path
 
-    return output_file
+
+def build_temp_path(input_path):
+    """
+    Build the output path by appending ' - 1080p' to the original filename.
+    """
+    dir_path, filename = os.path.split(input_path)
+    base, ext = os.path.splitext(filename)
+    temp_file = tempfile.NamedTemporaryFile(prefix="scaler_", suffix=ext, delete=False)
+    output_path = temp_file.name
+    temp_file.close()
+    return output_path
+
+
+def build_output_path(input_path):
+    """
+    Build the output path by appending ' - 1080p' to the original filename.
+    """
+    dir_path, filename = os.path.split(input_path)
+    base, ext = os.path.splitext(filename)
+    output_name = f"{base.strip()} - 1080p{ext}"
+    return os.path.join(dir_path, output_name)
 
 
 def is_4k_video(path):
@@ -458,8 +491,6 @@ def process_all_existing_files():
 def main():
     setup_logging()
     logging.info(f"Starting daemon_scale with GPU_ACCEL={GPU_ACCEL}")
-
-    os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)
 
     # 1) Bulk process existing files
     process_all_existing_files()
