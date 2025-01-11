@@ -22,5 +22,5 @@ NOTE: Compose file is gernerated with user set as root by default, adjust to you
 ### Build, push, load an image:
 ```
 docker buildx build --platform linux/amd64,linux/arm64 --tag fviolence/scalyfin:latest --tag fviolence/scalyfin:v1.0 --push .
-docker buildx build --platform linux/amd64 -t scaler:latest . --load
+docker buildx build --platform linux/amd64 -t scalyfin:latest --load .
 ```
