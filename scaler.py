@@ -18,14 +18,16 @@ WATCH_DIRECTORY = os.getenv("WATCH_DIRECTORY", "/watch_dir")
 # Toggle for GPU acceleration backends: "amd" or "rockchip"
 GPU_ACCEL = os.getenv("GPU_ACCEL", "undef").lower()
 
-# Example device paths (adjust for your system)
-AMD_VAAPI_DEVICE = "/dev/dri/renderD128"
+# Device path
+AMD_VAAPI_DEVICE = os.getenv("AMD_DEVICE", "") # "/dev/dri/renderD128" or "/dev/dri/renderD129" expected
 # ROCKCHIP_DEVICE  = "" # not needed
 
 # Quality parameters
-QP_H264 = 20
-QP_HEVC = 20
-CRF_AV1 = 25  # Used for AV1 (hardware or software)
+QP_H264 = os.getenv("QP_H264", "20")
+QP_HEVC = os.getenv("QP_HEVC", "20")
+CRF_H264 = os.getenv("CRF_H264", "20")
+CRF_HEVC = os.getenv("CRF_HEVC", "20")
+CRF_AV1 = os.getenv("CRF_AV1", "25")
 
 # Stability checking
 STABILITY_CHECK_INTERVAL = 5       # seconds between file checks
@@ -191,6 +193,33 @@ def get_video_resolution(input_file):
         return 0, 0
 
 
+# wrapper around ffmpeg call returning success status
+def render_file(input_path, temp_output_path, source_codec, width, height):
+    ffmpeg_cmd = build_ffmpeg_command(input_path, temp_output_path, source_codec, width, height)
+
+    try:
+        subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"[ERROR] {input_path}: Return code {e.returncode}\n{e.stderr}")
+
+    if GPU_ACCEL == ["amd", "rockchip"]:
+        logging.warning(f"Falling back to software.")
+        ffmpeg_cmd = build_ffmpeg_command_software(input_file, temp_output_path, width, height)
+
+        try:
+            subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"[ERROR] Software render attempt failed.")
+            logging.error(f"[ERROR] {input_path}: Return code {e.returncode}\n{e.stderr}")
+
+    return False
+
+
+
 def process_file(input_path):
     """
     1. Rename the original file.
@@ -210,25 +239,18 @@ def process_file(input_path):
         logging.error(f"Skipping {input_path}: Unable to determine resolution.")
         return
 
-    ffmpeg_cmd = build_ffmpeg_command(input_path, temp_output_path, source_codec, width, height, preserve_metadata=True)
-
     logging.info(f"[PROCESS] {input_path} -> {temp_output_path}")
-    try:
-        subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if render_file(input_path, temp_output_path, source_codec, width, height):
         logging.info(f"[DONE] {temp_output_path}")
-
         # Move to final output path
         logging.info(f"[MOVE] {temp_output_path} -> {final_output_path}")
         shutil.move(temp_output_path, final_output_path)
         rename_original_file(input_path)
-    except subprocess.CalledProcessError as e:
-        logging.error(f"[ERROR] {input_path}: Return code {e.returncode}\n{e.stderr}")
-    finally:
-        # Ensure temp file is cleaned if something went wrong
-        if os.path.exists(temp_output_path):
-            os.remove(temp_output_path)
-            logging.info(f"Cleaned up temporary file: {temp_output_path}")
+
+    # Ensure temp file is cleaned if something went wrong
+    if os.path.exists(temp_output_path):
+        os.remove(temp_output_path)
+        logging.info(f"Cleaned up temporary file: {temp_output_path}")
 
 
 def rename_original_file(input_path):
@@ -361,16 +383,13 @@ def build_ffmpeg_command(input_file, output_file, source_codec, width, height, p
         return build_ffmpeg_command_software(input_file, output_file, width, height, preserve_metadata)
 
 
-def build_ffmpeg_command_amd(input_file, output_file, source_codec, width, height, preserve_metadata):
+def build_ffmpeg_command_amd(input_file, output_file, source_codec, width, height, preserve_metadata=True):
     """
     AMD VAAPI: can do h264_vaapi, hevc_vaapi, av1_vaapi, etc.
     """
     if source_codec == "h264":
         encoder = f"h264_vaapi -qp {QP_H264}"
-    elif source_codec == "hevc":
-        encoder = f"hevc_vaapi -qp {QP_HEVC}"
     elif source_codec == "av1":
-        # Use av1_vaapi if your GPU/driver supports it
         encoder = f"av1_vaapi -crf {CRF_AV1} -b:v 0"
     else:
         # Default to HEVC VAAPI
@@ -399,15 +418,13 @@ def build_ffmpeg_command_amd(input_file, output_file, source_codec, width, heigh
     return cmd
 
 
-def build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, height, preserve_metadata):
+def build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, height, preserve_metadata=True):
     """
     Rockchip RKMPP: can do h264_rkmpp, hevc_rkmpp.
     AV1 encoding not supported (decode-only), so fallback to software if AV1 is desired.
     """
     if source_codec == "h264":
         encoder = f"h264_rkmpp -qp {QP_H264}"
-    elif source_codec == "hevc":
-        encoder = f"hevc_rkmpp -qp {QP_HEVC}"
     elif source_codec == "av1":
         # Rockchip can't encode AV1 => software fallback
         logging.info("Rockchip: Falling back to software libaom-av1 for AV1 encoding.")
@@ -437,21 +454,20 @@ def build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, 
     return cmd
 
 
-def build_ffmpeg_command_software(input_file, output_file, preserve_metadata, width, height, target_codec="libx264"):
+def build_ffmpeg_command_software(input_file, output_file, width, height, target_codec="libx265", preserve_metadata=True):
     """
     Fallback software encoding (libx264, libx265, libaom-av1, etc.),
     preserving metadata/streams if requested.
     """
     # Example CRF/preset choices
     if target_codec == "libx264":
-        video_quality = "-crf 18 -preset medium"
-    elif target_codec == "libx265":
-        video_quality = "-crf 18 -preset medium"
+        video_quality = f"-crf {CRF_H264} -preset medium"
     elif target_codec == "libaom-av1":
         # Example: use CRF, no bitrate, moderate speed
         video_quality = f"-crf {CRF_AV1} -b:v 0 -cpu-used 4"
     else:
-        video_quality = ""
+        # Default to libx265
+        video_quality = "-crf {CRF_HEVC} -preset medium"
 
     scaled_width, scaled_height = calculate_scaled_resolution(width, height)
     scale_filter = f"scale={scaled_width}:{scaled_height}"
