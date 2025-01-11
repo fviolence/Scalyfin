@@ -42,6 +42,7 @@ def setup_logging():
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     logging.info(f"GPU_ACCEL set to: {GPU_ACCEL}")
     logging.info(f"Watching directory: {WATCH_DIRECTORY}")
+    logging.info(f"Quality profiles: QP_H264: {QP_H264}, QP_HEVC: {QP_HEVC}, CRF_H264: {CRF_H264}, CRF_HEVC: {CRF_HEVC}, CRF_AV1: {CRF_AV1}")
 
 
 class VideoHandler(FileSystemEventHandler):
@@ -70,6 +71,7 @@ def add_file_to_pending(path):
     out_path = build_output_path(path)
     if os.path.exists(out_path):
         # Already processed => skip
+        logging.info(f"Corresponding output ({out_path}) already exist: {path}")
         return
 
     with pending_files_lock:
@@ -259,6 +261,11 @@ def rename_original_file(input_path):
     """
     dir_path, filename = os.path.split(input_path)
     base, ext = os.path.splitext(filename)
+
+    # Check if the base name ends with ' - 4k' and remove it
+    if base.endswith(" - 4k"):
+        base = base[:-5]
+
     new_name = f"{base.strip()} - 4k{ext}"
     new_path = os.path.join(dir_path, new_name)
 
@@ -286,6 +293,11 @@ def build_output_path(input_path):
     """
     dir_path, filename = os.path.split(input_path)
     base, ext = os.path.splitext(filename)
+
+    # Check if the base name ends with ' - 4k' and remove it
+    if base.endswith(" - 4k"):
+        base = base[:-5]
+
     output_name = f"{base.strip()} - 1080p{ext}"
     return os.path.join(dir_path, output_name)
 
