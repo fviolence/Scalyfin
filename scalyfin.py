@@ -36,6 +36,9 @@ STABILITY_REQUIRED_ROUNDS = 2      # number of consecutive stable checks require
 # Logging configuration
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+
+PRESERVE_METADATA = True
+SOURCE_CODEC_TO_SOFTWARE = {'h264': 'libx264', 'hevc': 'libx265', 'av1': 'libaom-av1'}
 # =================== END OF CONFIG ==========================
 
 def setup_logging():
@@ -196,8 +199,8 @@ def get_video_resolution(input_file):
 
 
 # wrapper around ffmpeg call returning success status
-def render_file(input_path, temp_output_path, source_codec, width, height):
-    ffmpeg_cmd = build_ffmpeg_command(input_path, temp_output_path, source_codec, width, height)
+def render_file(input_path, temp_output_path, width, height, source_codec):
+    ffmpeg_cmd = build_ffmpeg_command(input_path, temp_output_path, width, height, source_codec, PRESERVE_METADATA)
 
     try:
         subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
@@ -208,7 +211,8 @@ def render_file(input_path, temp_output_path, source_codec, width, height):
 
     if GPU_ACCEL == ["amd", "rockchip"]:
         logging.warning(f"Falling back to software.")
-        ffmpeg_cmd = build_ffmpeg_command_software(input_file, temp_output_path, width, height)
+        target_codec = SOURCE_CODEC_TO_SOFTWARE.get(source_codec, "libx265")
+        ffmpeg_cmd = build_ffmpeg_command_software(input_path, temp_output_path, width, height, target_codec, PRESERVE_METADATA)
 
         try:
             subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
@@ -242,7 +246,7 @@ def process_file(input_path):
         return
 
     logging.info(f"[PROCESS] {input_path} -> {temp_output_path}")
-    if render_file(input_path, temp_output_path, source_codec, width, height):
+    if render_file(input_path, temp_output_path, width, height, source_codec):
         logging.info(f"[DONE] {temp_output_path}")
         # Move to final output path
         logging.info(f"[MOVE] {temp_output_path} -> {final_output_path}")
@@ -382,20 +386,21 @@ def calculate_scaled_resolution(width, height, target_width=1920):
 #  FFmpeg command-building logic for AMD vs. Rockchip + fallback
 # ----------------------------------------------------------------
 
-def build_ffmpeg_command(input_file, output_file, source_codec, width, height, preserve_metadata=True):
+def build_ffmpeg_command(input_file, output_file, width, height, source_codec, preserve_metadata):
     """
     Decide how to encode based on GPU_ACCEL.
     """
     if GPU_ACCEL == "amd":
-        return build_ffmpeg_command_amd(input_file, output_file, source_codec, width, height, preserve_metadata)
+        return build_ffmpeg_command_amd(input_file, output_file, width, height, source_codec, preserve_metadata)
     elif GPU_ACCEL == "rockchip":
-        return build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, height, preserve_metadata)
+        return build_ffmpeg_command_rockchip(input_file, output_file, width, height, source_codec, preserve_metadata)
     else:
         logging.warning(f"Unknown GPU_ACCEL={GPU_ACCEL}. Falling back to software.")
-        return build_ffmpeg_command_software(input_file, output_file, width, height, preserve_metadata)
+        target_codec = SOURCE_CODEC_TO_SOFTWARE.get(source_codec, "libx265")
+        return build_ffmpeg_command_software(input_file, output_file, width, height, target_codec, preserve_metadata)
 
 
-def build_ffmpeg_command_amd(input_file, output_file, source_codec, width, height, preserve_metadata=True):
+def build_ffmpeg_command_amd(input_file, output_file, width, height, source_codec, preserve_metadata):
     """
     AMD VAAPI: can do h264_vaapi, hevc_vaapi, av1_vaapi, etc.
     """
@@ -430,7 +435,7 @@ def build_ffmpeg_command_amd(input_file, output_file, source_codec, width, heigh
     return cmd
 
 
-def build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, height, preserve_metadata=True):
+def build_ffmpeg_command_rockchip(input_file, output_file, width, height, source_codec, preserve_metadata):
     """
     Rockchip RKMPP: can do h264_rkmpp, hevc_rkmpp.
     AV1 encoding not supported (decode-only), so fallback to software if AV1 is desired.
@@ -440,7 +445,7 @@ def build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, 
     elif source_codec == "av1":
         # Rockchip can't encode AV1 => software fallback
         logging.info("Rockchip: Falling back to software libaom-av1 for AV1 encoding.")
-        return build_ffmpeg_command_software(input_file, output_file, preserve_metadata, target_codec="libaom-av1")
+        return build_ffmpeg_command_software(input_file, output_file, width, height, "libaom-av1", preserve_metadata)
     else:
         # Default to HEVC rkmpp
         encoder = f"hevc_rkmpp -qp {QP_HEVC}"
@@ -466,7 +471,7 @@ def build_ffmpeg_command_rockchip(input_file, output_file, source_codec, width, 
     return cmd
 
 
-def build_ffmpeg_command_software(input_file, output_file, width, height, target_codec="libx265", preserve_metadata=True):
+def build_ffmpeg_command_software(input_file, output_file, width, height, target_codec, preserve_metadata):
     """
     Fallback software encoding (libx264, libx265, libaom-av1, etc.),
     preserving metadata/streams if requested.
@@ -479,7 +484,7 @@ def build_ffmpeg_command_software(input_file, output_file, width, height, target
         video_quality = f"-crf {CRF_AV1} -b:v 0 -cpu-used 4"
     else:
         # Default to libx265
-        video_quality = "-crf {CRF_HEVC} -preset medium"
+        video_quality = f"-crf {CRF_HEVC} -preset medium"
 
     scaled_width, scaled_height = calculate_scaled_resolution(width, height)
     scale_filter = f"scale={scaled_width}:{scaled_height}"
