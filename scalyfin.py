@@ -9,6 +9,9 @@ import threading
 import logging
 import json
 import math
+import atexit
+import signal
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -39,6 +42,11 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
 PRESERVE_METADATA = True
 SOURCE_CODEC_TO_SOFTWARE = {'h264': 'libx264', 'hevc': 'libx265', 'av1': 'libaom-av1'}
+
+UPDATE_TIMER= 20
+UPDATE_FILE = "/tmp/scalyfin_status"
+TEMP_FILES = [UPDATE_FILE]
+terminate = False
 # =================== END OF CONFIG ==========================
 
 def setup_logging():
@@ -48,7 +56,41 @@ def setup_logging():
     logging.info(f"Quality profiles: QP_H264: {QP_H264}, QP_HEVC: {QP_HEVC}, CRF_H264: {CRF_H264}, CRF_HEVC: {CRF_HEVC}, CRF_AV1: {CRF_AV1}")
 
 
-class VideoHandler(FileSystemEventHandler):
+# Healthcheck handler
+def update_status():
+    """Periodically update the status file to indicate the script is running."""
+    global terminate
+    while not terminate:
+        try:
+            with open(UPDATE_FILE, "w") as f:
+                f.write("running")
+            time.sleep(UPDATE_TIMER)
+        except Exception as e:
+            logging.error(f"Error updating status file: {e}")
+            terminate = True
+            break
+
+
+def cleanup_temp_files():
+    """Remove all tracked temporary files."""
+    for temp_file in TEMP_FILES:
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                logging.info(f"Removed temporary file: {temp_file}")
+            except Exception as e:
+                logging.error(f"Error removing file {temp_file}: {e}")
+    logging.info("Shutting down.")
+
+
+def signal_handler(signum, frame):
+    """Set the terminate flag when a signal is received."""
+    global terminate
+    logging.info(f"Signal {signum} received.")
+    terminate = True
+
+
+class NewcomersHandler(FileSystemEventHandler):
     """
     Handles watchdog events: files created or modified.
     If a video file is found, add/update it in the pending queue for processing.
@@ -73,7 +115,6 @@ def add_file_to_pending(path):
 
     out_path = build_output_path(path)
     if os.path.exists(out_path):
-        # Already processed => skip
         logging.info(f"Corresponding output ({out_path}) already exist: {path}")
         return
 
@@ -225,7 +266,6 @@ def render_file(input_path, temp_output_path, width, height, source_codec):
     return False
 
 
-
 def process_file(input_path):
     """
     1. Rename the original file.
@@ -266,7 +306,7 @@ def rename_original_file(input_path):
     dir_path, filename = os.path.split(input_path)
     base, ext = os.path.splitext(filename)
 
-    # Check if the base name ends with ' - 4k' and remove it
+    # Check if the base name ends with ' - 4k' to avoid collisions
     if base.endswith(" - 4k"):
         base = base[:-5]
 
@@ -287,6 +327,7 @@ def build_temp_path(input_path):
     base, ext = os.path.splitext(filename)
     temp_file = tempfile.NamedTemporaryFile(prefix="scaler_", suffix=ext, delete=False)
     output_path = temp_file.name
+    TEMP_FILES.append(output_path)
     temp_file.close()
     return output_path
 
@@ -298,7 +339,7 @@ def build_output_path(input_path):
     dir_path, filename = os.path.split(input_path)
     base, ext = os.path.splitext(filename)
 
-    # Check if the base name ends with ' - 4k' and remove it
+    # Check if the base name ends with ' - 4k' to avoid collisions
     if base.endswith(" - 4k"):
         base = base[:-5]
 
@@ -321,7 +362,7 @@ def is_4k_video(path):
         cmd = [
             "ffprobe",
             "-v", "error",
-            "-select_streams", "v:0",                 # Only first video stream
+            "-select_streams", "v:0",
             "-show_entries", "stream=codec_type:format=duration",
             "-of", "json",
             path
@@ -522,14 +563,22 @@ def process_all_existing_files():
 
 
 def main():
+    global terminate
+
     setup_logging()
-    logging.info(f"Starting daemon_scale with GPU_ACCEL={GPU_ACCEL}")
+    logging.info(f"Starting with GPU_ACCEL={GPU_ACCEL}")
+
+    # Setup temporary files cleanup on exit
+    atexit.register(cleanup_temp_files)
+    # Attach signal handlers to set the terminate flag
+    signal.signal(signal.SIGTERM, signal_handler) # docker stop sends SIGTERM
+    signal.signal(signal.SIGHUP, signal_handler)  # docker kill --signal=SIGHUP sends SIGHUP
 
     # 1) Bulk process existing files
     process_all_existing_files()
 
     # 2) Start watchdog
-    event_handler = VideoHandler()
+    event_handler = NewcomersHandler()
     observer = Observer()
     observer.schedule(event_handler, WATCH_DIRECTORY, recursive=True)
     observer.start()
@@ -538,13 +587,22 @@ def main():
     checker_thread = threading.Thread(target=stability_checker, daemon=True)
     checker_thread.start()
 
+    # 4) Start status updater thread
+    status_thread = threading.Thread(target=update_status, daemon=True)
+    status_thread.start()
+
     logging.info(f"Monitoring directory (recursive): {WATCH_DIRECTORY}. Press Ctrl+C to stop.")
     try:
-        while True:
+        while not terminate:
             time.sleep(1)
     except KeyboardInterrupt:
-        observer.stop()
+        logging.info("Keyboard interrupt received.")
+
+    logging.info("Stopping observer.")
+    observer.stop()
     observer.join()
+    # since checker_thread and status_thread are daemon threads
+    # they will automatically terminate when the main program exits
 
 
 # Global thread-safe dictionary for pending files

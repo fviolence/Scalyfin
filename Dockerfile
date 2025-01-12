@@ -74,5 +74,10 @@ ENV PATH="$JELLYFIN_FFMPEG_PATH:$PATH"
 # Final runtime setup
 WORKDIR /app
 
+# Copy scripts
+COPY healthcheck.sh /app/healthcheck.sh
 COPY scalyfin.py /app/scalyfin.py
 CMD ["python3", "/app/scalyfin.py"]
+
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 CMD /app/healthcheck.sh
