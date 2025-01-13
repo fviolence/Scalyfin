@@ -68,7 +68,7 @@ Mandatory:
 | **Variable**     | **Description**                                                                                   |
 |------------------|---------------------------------------------------------------------------------------------------|
 | `GPU_ACCEL`      | Specifies the GPU backend to use. Supported values: `amd` (for AMD GPUs) or `rockchip` (for Rockchip devices). |
-| `WATCH_DIRECTORY`| Directory to monitor for the videos.                                                              |
+| `WATCH_DIRECTORY`| Directory to monitor for the videos. Applicable only to generator.                                |
 
 Optional:
 | **Variable**     | **Description**                                                                                   | **Default Value**                       |
@@ -79,6 +79,8 @@ Optional:
 | `CRF_H264`       | Constant Rate Factor for H.264 SW codec. values: 0-51, lower -> better quality.                   | 20       |
 | `CRF_HEVC`       | Constant Rate Factor for HEVC SW codec. values: 0-51, lower -> better quality.                    | 20       |
 | `CRF_AV1`        | Constant Rate Factor for AV1 HW and SW codecs. values: 0-51, lower -> better quality.             | 25       |
+| `CPU_SHARES`     | Sets value of cpu_shares in docker compose file. values: 2-262144. Applicable only to generator.  | -        |
+| `CPU_WEIGHT`     | Converts to cpu_shares and sets it. values: 1-10000. Applicable only to generator.                | -        |
 
 
 #### Build, push, load an image:
