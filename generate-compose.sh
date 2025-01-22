@@ -37,20 +37,11 @@ else
   exit 1
 fi
 
-if [ "$QP_H264" ]; then
-  QP_H264_ENV="- QP_H264='$QP_H264'"
+if [ "$MAX_BITRATE" ]; then
+  MAX_BITRATE_ENV="- MAX_BITRATE=$MAX_BITRATE"
 fi
-if [ "$QP_HEVC" ]; then
-  QP_HEVC_ENV="- QP_HEVC='$QP_HEVC'"
-fi
-if [ "$CRF_H264" ]; then
-  CRF_H264_ENV="- CRF_H264='$CRF_H264'"
-fi
-if [ "$CRF_HEVC" ]; then
-  CRF_HEVC_ENV="- CRF_HEVC='$CRF_HEVC'"
-fi
-if [ "$CRF_AV1" ]; then
-  CRF_AV1_ENV="- CRF_AV1='$CRF_AV1'"
+if [ "$DELETE_ORIGINAL_FILE" ]; then
+  DELETE_ORIGINAL_FILE_ENV="- DELETE_ORIGINAL_FILE='$DELETE_ORIGINAL_FILE'"
 fi
 
 # Function to convert cpu.weight to cpu.shares
@@ -93,11 +84,8 @@ services:
     environment:
       - GPU_ACCEL=${GPU_ACCEL}
       ${AMD_DEVICE_ENV}
-      ${QP_H264_ENV}
-      ${QP_HEVC_ENV}
-      ${CRF_H264_ENV}
-      ${CRF_HEVC_ENV}
-      ${CRF_AV1_ENV}
+      ${MAX_BITRATE_ENV}
+      ${DELETE_ORIGINAL_FILE_ENV}
     volumes:
       - ${WATCH_DIRECTORY}:/watch_dir
     devices:
