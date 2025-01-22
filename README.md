@@ -4,7 +4,7 @@
 #### Features:
  * Automatic directory monitoring for new 4K videos.
  * Hardware-accelerated video transcoding for AMD and Rockchip.
- * Metadata preservation and customizable output formats.
+ * Preserves metadata, converts Advanced SubStation Alpha subtitles to SubRip, limits bitrate if set value is exceeded.
 
 ## Examples of Docker Compose files.
 ##### [AMD](https://jellyfin.org/docs/general/administration/hardware-acceleration/amd/)
@@ -65,22 +65,17 @@ docker compose up --build --force-recreate --no-deps -d
 
 ## Some envaroment variable to consider
 Mandatory:
-| **Variable**     | **Description**                                                                                   |
-|------------------|---------------------------------------------------------------------------------------------------|
-| `GPU_ACCEL`      | Specifies the GPU backend to use. Supported values: `amd` (for AMD GPUs) or `rockchip` (for Rockchip devices). |
-| `WATCH_DIRECTORY`| Directory to monitor for the videos. Applicable only to generator.                                |
+| **Variable**           | **Description**                                                                                   |
+|------------------------|---------------------------------------------------------------------------------------------------|
+| `GPU_ACCEL`            | Specifies the GPU backend to use. Supported values: `amd` (for AMD GPUs) or `rockchip` (for Rockchip devices). |
+| `WATCH_DIRECTORY`      | Directory to monitor for the videos. Applicable only to generator.                                |
 
 Optional:
-| **Variable**     | **Description**                                                                                   | **Default Value**                       |
-|------------------|---------------------------------------------------------------------------------------------------|-----------------------------------------|
-| `AMD_DEVICE`     | Path to the AMD VAAPI device (e.g., `/dev/dri/renderD128` or `/dev/dri/renderD129`).              | Auto-detected with `/dev/dri/renderD128` as default if both present. |
-| `QP_H264`        | Quantization Parameter for H264 HW codec. values: 0-51, lower -> better quality.                  | 20       |
-| `QP_HEVC`        | Quantization Parameter for HEVC HW codec. values: 0-51, lower -> better quality.                  | 20       |
-| `CRF_H264`       | Constant Rate Factor for H.264 SW codec. values: 0-51, lower -> better quality.                   | 20       |
-| `CRF_HEVC`       | Constant Rate Factor for HEVC SW codec. values: 0-51, lower -> better quality.                    | 20       |
-| `CRF_AV1`        | Constant Rate Factor for AV1 HW and SW codecs. values: 0-51, lower -> better quality.             | 25       |
-| `CPU_SHARES`     | Sets value of cpu_shares in docker compose file. values: 2-262144. Applicable only to generator.  | -        |
-| `CPU_WEIGHT`     | Converts to cpu_shares and sets it. values: 1-10000. Applicable only to generator.                | -        |
+| **Variable**           | **Description**                                                                                   | **Default Value**                       |
+|------------------------|---------------------------------------------------------------------------------------------------|-----------------------------------------|
+| `AMD_DEVICE`           | Path to the AMD VAAPI device (e.g., `/dev/dri/renderD128` or `/dev/dri/renderD129`).              | Auto-detected with `/dev/dri/renderD128` as default if both present. |
+| `MAX_BITRATE`          | Sets the maximum acceptable bitrate of transcoded video in bps.                                   | 75000000 (75 Mbps) |
+| `DELETE_ORIGINAL_FILE` | Boolean flag to specify if original video should be deleted after being processed.                | True      |
 
 
 #### Build, push, load an image:

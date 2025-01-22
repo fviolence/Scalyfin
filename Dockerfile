@@ -61,8 +61,9 @@ fi
 
 # FFMPEG and python setup
 RUN apt-get install --no-install-recommends --no-install-suggests -y jellyfin-ffmpeg7 \
-       openssl locales libfontconfig1 libfreetype6 python3 python3-pip python3-watchdog lsof \
-    && sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen
+       openssl locales libfontconfig1 libfreetype6 python3 python3-pip python3-watchdog lsof mediainfo \
+    && sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen && \
+    pip install pysub-parser --break-system-packages
 
 # Cleanup
 RUN apt-get clean autoclean -y \

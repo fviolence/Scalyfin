@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import tempfile
 import shutil
 import time
@@ -15,45 +16,55 @@ import signal
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from pysubparser import parser, writer
+
 # ====================== CONFIGURATION =======================
 WATCH_DIRECTORY = os.getenv("WATCH_DIRECTORY", "/watch_dir")
+SCAN_INTERVAL = 60                 # Scan interval in seconds
 
 # Toggle for GPU acceleration backends: "amd" or "rockchip"
 GPU_ACCEL = os.getenv("GPU_ACCEL", "undef").lower()
 
 # Device path
-AMD_VAAPI_DEVICE = os.getenv("AMD_DEVICE", "") # "/dev/dri/renderD128" or "/dev/dri/renderD129" expected
-# ROCKCHIP_DEVICE  = "" # not needed
+# "/dev/dri/renderD128" or "/dev/dri/renderD129" expected
+AMD_VAAPI_DEVICE = os.getenv("AMD_DEVICE", "")
 
 # Quality parameters
-QP_H264 = os.getenv("QP_H264", "20")
-QP_HEVC = os.getenv("QP_HEVC", "20")
-CRF_H264 = os.getenv("CRF_H264", "20")
-CRF_HEVC = os.getenv("CRF_HEVC", "20")
-CRF_AV1 = os.getenv("CRF_AV1", "25")
+MAX_BITRATE = int(os.getenv("MAX_BITRATE", "75000000"))
+
+# Toggle to remove/leave original file after conversion (default: yes)
+DELETE_ORIGINAL_FILE = os.getenv("DELETE_ORIGINAL_FILE", "yes").lower() in ("true", "1", "yes")
+RENAME_ONLY = os.getenv("RENAME_ONLY", "no").lower() in ("true", "1", "yes")
 
 # Stability checking
 STABILITY_CHECK_INTERVAL = 5       # seconds between file checks
-STABILITY_REQUIRED_ROUNDS = 2      # number of consecutive stable checks required
+STABILITY_REQUIRED_ROUNDS = 4      # number of consecutive stable checks required
 
 # Logging configuration
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
-PRESERVE_METADATA = True
-SOURCE_CODEC_TO_SOFTWARE = {'h264': 'libx264', 'hevc': 'libx265', 'av1': 'libaom-av1'}
+# Mappings
+SUBS_CODEC_TO_EXTENSION = {
+    'subrip': '.srt',
+    'ass': '.ass',
+    'ssa': '.ssa',
+    'microdvd': '.sub',
+    'subviewer': '.txt'}
 
-UPDATE_TIMER= 20
+# Healthcheck configuration
+UPDATE_TIMER = 20
 UPDATE_FILE = "/tmp/scalyfin_status"
 TEMP_FILES = [UPDATE_FILE]
 terminate = False
 # =================== END OF CONFIG ==========================
 
+
 def setup_logging():
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     logging.info(f"GPU_ACCEL set to: {GPU_ACCEL}")
     logging.info(f"Watching directory: {WATCH_DIRECTORY}")
-    logging.info(f"Quality profiles: QP_H264: {QP_H264}, QP_HEVC: {QP_HEVC}, CRF_H264: {CRF_H264}, CRF_HEVC: {CRF_HEVC}, CRF_AV1: {CRF_AV1}")
+    logging.info(f"Maximal bit-rate: {MAX_BITRATE}")
 
 
 # Healthcheck handler
@@ -90,18 +101,63 @@ def signal_handler(signum, frame):
     terminate = True
 
 
+def update_files_map(files_map, path):
+    if path in files_map:
+        info = files_map[path]
+        size_last = info.size_history[-1]
+        size_now = os.path.getsize(path)
+        mod_time_now = os.path.getmtime(path)
+        if size_last != size_now or info.mod_time != mod_time_now:
+            files_map.pop(path, None)
+
+
+def is_new_file(path):
+    update_files_map(processed_files, path)
+    update_files_map(skippable_files, path)
+    return path not in pending_files and path not in processed_files and path not in skippable_files
+
+
 class NewcomersHandler(FileSystemEventHandler):
     """
     Handles watchdog events: files created or modified.
     If a video file is found, add/update it in the pending queue for processing.
     """
     def on_created(self, event):
-        if not event.is_directory:
+        if not event.is_directory and is_new_file(event.src_path):
+            logging.info(
+                f"File system event found new file on create: "
+                f"{event.src_path}")
             add_file_to_pending(event.src_path)
 
     def on_modified(self, event):
-        if not event.is_directory and event.src_path not in pending_files:
-                add_file_to_pending(event.src_path)
+        if not event.is_directory and is_new_file(event.src_path):
+            logging.info(
+                f"File system event found new file on modify: "
+                f"{event.src_path}")
+            add_file_to_pending(event.src_path)
+
+
+def scan_directory():
+    """Periodically scan the directory for new files."""
+    while True:
+        for root, _, files in os.walk(WATCH_DIRECTORY):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if is_new_file(file_path):
+                    logging.info(f"Scanner found new file: {file_path}")
+                    add_file_to_pending(file_path)
+        time.sleep(SCAN_INTERVAL)
+
+
+def convert_subtitle(input_subs, output_subs):
+    """
+    Convert a subtitle file from one format to another.
+    :param input_subs: path of the input subtitle file
+    :param output_subs: path of the output subtitle file
+    """
+    subtitles = parser.parse(input_subs)
+    writer.write(subtitles, output_subs)
+    logging.info(f"Converted {input_subs} to {output_subs}")
 
 
 def add_file_to_pending(path):
@@ -109,15 +165,6 @@ def add_file_to_pending(path):
     Register (or re-register) a file for stability checks before processing.
     We only do so if it's really a video (ffprobe-based check).
     """
-    if not is_4k_video(path):
-        logging.info(f"File not a 4k video: {path}")
-        return
-
-    out_path = build_output_path(path)
-    if os.path.exists(out_path):
-        logging.info(f"Corresponding output ({out_path}) already exist: {path}")
-        return
-
     with pending_files_lock:
         if path not in pending_files:
             logging.info(f"File queued for stability checks: {path}")
@@ -128,10 +175,11 @@ def add_file_to_pending(path):
 
 class FileInfo:
     """
-    Tracks info about a file to see if it remains stable (size unchanged, not in use).
+    Tracks info about a file to see if it remains stable
     """
     def __init__(self):
         self.size_history = []
+        self.mod_time = 0
         self.rounds_stable = 0
 
 
@@ -145,22 +193,39 @@ def stability_checker():
         check_pending_files()
 
 
+def split_file_name(name):
+    """
+    Splits a file name into its directory path, base name (without tag),
+    and extension.
+    """
+    dir_path, filename = os.path.split(name)
+    base, ext = os.path.splitext(filename)
+    # Regex pattern to match " - {Tag}" only at the end of the string
+    pattern = r" - [^()]+$"
+    # Remove the optional tag and " - " if present
+    base = re.sub(pattern, "", base)
+    return dir_path, base, ext
+
+
 def check_pending_files():
     with pending_files_lock:
         to_remove = []
-
         for path, info in pending_files.items():
             if not os.path.exists(path):
                 logging.warning(f"File disappeared: {path}")
                 to_remove.append(path)
                 continue
-
             # Check if file is in use by another process
             if is_file_in_use(path):
-                logging.debug(f"File is in use by another process, skipping: {path}")
+                logging.debug(
+                    f"File is in use by another process, skipping: {path}")
                 info.rounds_stable = 0
                 continue
-
+            # Check files last modification time
+            mod_time = os.path.getmtime(path)
+            if info.mod_time != mod_time:
+                info.mod_time = mod_time
+                info.rounds_stable = 0
             # Check size stability
             size_now = os.path.getsize(path)
             if info.size_history and size_now == info.size_history[-1]:
@@ -169,17 +234,21 @@ def check_pending_files():
             else:
                 # Size changed or first time check
                 info.rounds_stable = 0
-
+            # Add size to history and trim list to max 5 last checks
             info.size_history.append(size_now)
             if len(info.size_history) > 5:
                 info.size_history.pop(0)
-
             # If stable for STABILITY_REQUIRED_ROUNDS intervals, process
             if info.rounds_stable >= STABILITY_REQUIRED_ROUNDS:
                 logging.info(f"File is stable, processing: {path}")
-                process_file(path)
+                if not is_video(path):
+                    logging.debug(f"File not a video: {path}")
+                    skippable_files[path] = info
+                else:
+                    process_file(path)
+                    if os.path.exists(path):
+                        processed_files[path] = info
                 to_remove.append(path)
-
         # Remove processed or disappeared files
         for r in to_remove:
             pending_files.pop(r, None)
@@ -204,7 +273,7 @@ def is_file_in_use(path):
         return False
 
 
-def get_video_resolution(input_file):
+def get_video_resolution(video_path):
     """
     Retrieve the resolution of the video using ffprobe.
     """
@@ -215,45 +284,40 @@ def get_video_resolution(input_file):
             "-select_streams", "v:0",
             "-show_entries", "stream=width,height",
             "-of", "json",
-            input_file
+            video_path
         ]
         logging.info(f"[CMD] get_video_resolution: {' '.join(cmd)}")
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
-        data = json.loads(output)
-    except Exception as e:
-        logging.debug(f"Error in get_video_resolution for {input_file}: {e}")
-        return 0, 0
-
-    if "streams" not in data or not data["streams"]:
-        logging.info(f"No 'streams' in ffprobe response for file: {input_file}")
-        return 0, 0
-
-    try:
-        stream = data["streams"][0]
+        output = subprocess.check_output(
+            cmd, stderr=subprocess.STDOUT).decode()
+        stream = json.loads(output).get("streams", [ dict() ])[0]
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
-        logging.info(f"Width {width} and height {height} for file: {input_file}")
+        logging.info(
+            f"Width {width} and height {height} for file: {video_path}")
         return width, height
     except Exception as e:
-        logging.error(f"Failed to get resolution for {input_file}: {e}")
+        logging.error(f"Failed to get resolution for {video_path}: {e}")
         return 0, 0
 
 
 # wrapper around ffmpeg call returning success status
-def render_file(input_path, temp_output_path, width, height, source_codec):
-    ffmpeg_cmd = build_ffmpeg_command(input_path, temp_output_path, width, height, source_codec, PRESERVE_METADATA)
+def render_file(input_path, output_path, params):
+    ffmpeg_cmd = build_ffmpeg_command(input_path, output_path, params)
 
     try:
         subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except subprocess.CalledProcessError as e:
-        logging.error(f"[ERROR] {input_path}: Return code {e.returncode}\n{e.stderr}")
+        logging.error(
+            f"[ERROR] {input_path}: Return code "
+            f"{e.returncode}\n"
+            f"{e.stderr}")
 
     if GPU_ACCEL == ["amd", "rockchip"]:
         logging.warning(f"Falling back to software.")
-        target_codec = SOURCE_CODEC_TO_SOFTWARE.get(source_codec, "libx265")
-        ffmpeg_cmd = build_ffmpeg_command_software(input_path, temp_output_path, width, height, target_codec, PRESERVE_METADATA)
+        ffmpeg_cmd = build_ffmpeg_command_software(
+            input_path, output_path, params)
 
         try:
             subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
@@ -261,140 +325,260 @@ def render_file(input_path, temp_output_path, width, height, source_codec):
             return True
         except subprocess.CalledProcessError as e:
             logging.error(f"[ERROR] Software render attempt failed.")
-            logging.error(f"[ERROR] {input_path}: Return code {e.returncode}\n{e.stderr}")
+            logging.error(
+                f"[ERROR] {input_path}: Return code "
+                f"{e.returncode}\n"
+                f"{e.stderr}")
 
     return False
 
 
-def process_file(input_path):
-    """
-    1. Rename the original file.
-    2. Generate the output file path.
-    3. Transcode the video while preserving metadata and aspect ratio.
-    """
-    temp_output_path = build_temp_path(input_path)
-    final_output_path = build_output_path(input_path)
-
-    if os.path.exists(final_output_path):
-        logging.info(f"Output already exists, skipping: {final_output_path}")
-        return
-
-    source_codec = get_video_codec(input_path)
-    width, height = get_video_resolution(input_path)
-    if not width or not height:
-        logging.error(f"Skipping {input_path}: Unable to determine resolution.")
-        return
-
-    logging.info(f"[PROCESS] {input_path} -> {temp_output_path}")
-    if render_file(input_path, temp_output_path, width, height, source_codec):
-        logging.info(f"[DONE] {temp_output_path}")
-        # Move to final output path
-        logging.info(f"[MOVE] {temp_output_path} -> {final_output_path}")
-        shutil.move(temp_output_path, final_output_path)
-        rename_original_file(input_path)
-
-    # Ensure temp file is cleaned if something went wrong
-    if os.path.exists(temp_output_path):
-        os.remove(temp_output_path)
-        logging.info(f"Cleaned up temporary file: {temp_output_path}")
+def get_streams_info(video_path, stream_type="s"):
+    """Extract subtitle streams info using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", f"{stream_type}", "-show_entries",
+        "stream=index,codec_name,codec_type:stream_tags=title,language",
+        "-of", "json", video_path
+    ]
+    logging.info(f"[CMD] get_stream_info: {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True)
+    return json.loads(result.stdout).get("streams", [])
 
 
-def rename_original_file(input_path):
-    """
-    Rename the original file by appending ' - 4k' to its name.
-    """
-    dir_path, filename = os.path.split(input_path)
-    base, ext = os.path.splitext(filename)
-
-    # Check if the base name ends with ' - 4k' to avoid collisions
-    if base.endswith(" - 4k"):
-        base = base[:-5]
-
-    new_name = f"{base.strip()} - 4k{ext}"
-    new_path = os.path.join(dir_path, new_name)
-
-    if new_path != input_path:
-        logging.info(f"Renaming original file: {input_path} -> {new_path}")
-        shutil.move(input_path, new_path)
-    return new_path
-
-
-def build_temp_path(input_path):
-    """
-    Build the output path by appending ' - 1080p' to the original filename.
-    """
-    dir_path, filename = os.path.split(input_path)
-    base, ext = os.path.splitext(filename)
-    temp_file = tempfile.NamedTemporaryFile(prefix="scaler_", suffix=ext, delete=False)
+def build_temp_path(prefix, suffix):
+    """Build a name for temporary file."""
+    temp_file = tempfile.NamedTemporaryFile(
+        prefix=prefix, suffix=suffix, delete=False)
     output_path = temp_file.name
     TEMP_FILES.append(output_path)
     temp_file.close()
     return output_path
 
 
-def build_output_path(input_path):
+def transcode_through_temp(input_path, output_path, ext, params):
+    temp_path = build_temp_path("scaler_", ext)
+    logging.info(f"[PROCESS] {input_path} -> {temp_path}")
+    if render_file(input_path, temp_path, params):
+        logging.info(f"[DONE] {temp_path}")
+        # Move to final output path
+        logging.info(f"[MOVE] {temp_path} -> {output_path}")
+        shutil.move(temp_path, output_path)
+
+    # Ensure temp file is cleaned if something went wrong
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
+        logging.info(f"Cleaned up temporary file: {temp_path}")
+
+
+def extract_subtitles(video_path, streams):
+    """Extract subtitle streams using ffmpeg."""
+    cmd = (
+        f"ffmpeg -y "
+        f"-i '{video_path}' "
+    )
+    for stream in streams:
+        index = stream['index']
+        output_path = stream['orig_subs']
+        cmd += f"-map 0:s:{index} '{output_path}' "
+    logging.info(f"[CMD] extract_subtitles: {cmd}")
+    subprocess.run(cmd, shell=True, check=True, text=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def process_subtitles(input_path):
     """
-    Build the output path by appending ' - 1080p' to the original filename.
+    Process some subtitles' codecs,
+    as Jellyfin-ffmpeg is unable to transcode them.
     """
-    dir_path, filename = os.path.split(input_path)
-    base, ext = os.path.splitext(filename)
+    subtitle_maps = []
+    streams_to_extract = []
+    subtitle_streams = get_streams_info(input_path)
+    for stream in subtitle_streams:
+        index = subtitle_streams.index(stream)
+        codec = stream["codec_name"]
+        if codec in ["ass", "ssa"]:  # Advanced SubStation Alpha
+            # extract subtitles and convert them
+            orig_subs = build_temp_path(
+                f"sub_{index}_", SUBS_CODEC_TO_EXTENSION[codec])
+            conv_subs = build_temp_path(f"sub_{index}_", ".srt")
+            streams_to_extract.append(
+                {'index': index, 'orig_subs': orig_subs, 'conv_subs': conv_subs})
+            # maps for ffmpeg
+            file_index = len(streams_to_extract)  # counts from 1
+            lang = stream['tags']['language']
+            title = stream['tags']['title']
+            subtitle_maps.append(
+                f"-map {file_index} "
+                f"-c:s:{index} srt "
+                f"-metadata:s:s:{index} language={lang} "
+                f"-metadata:s:s:{index} title='{title}'")
+        else:
+            # codec copied as is
+            subtitle_maps.append(f"-map 0:s:{index} -c:s:{index} copy")
 
-    # Check if the base name ends with ' - 4k' to avoid collisions
-    if base.endswith(" - 4k"):
-        base = base[:-5]
+    if len(streams_to_extract) == 0:
+        if subtitle_maps:
+            logging.info(
+                f"Found no subtitle streams to convert. "
+                f"Coping all subtitles as is")
+            return {'files': [], 'maps': ["-map 0:s -c:s copy"]}
+        else:
+            logging.info("Found no subtitle streams found at all")
+            return {'files': [], 'maps': []}
 
-    output_name = f"{base.strip()} - 1080p{ext}"
-    return os.path.join(dir_path, output_name)
+    # extract subtitles to temp files
+    extract_subtitles(input_path, streams_to_extract)
+    # convert subtitles to srt format
+    for stream in streams_to_extract:
+        convert_subtitle(stream['orig_subs'], stream['conv_subs'])
+
+    # remove original subtitles files
+    for stream in streams_to_extract:
+        os.remove(stream['orig_subs'])
+    logging.info("Removed original subtitles files")
+
+    return {'files': [stream['conv_subs']
+                      for stream in streams_to_extract], 'maps': subtitle_maps}
 
 
-def is_4k_video(path):
+def process_file(input_path):
     """
-    Checks via ffprobe:
-        1) Codec type video
-        2) Duration more than 1 sec (to avoid images)
-        3) Resolution 4k and above
+    Transcode the video while preserving metadata and aspect ratio.
     """
-    if not os.path.isfile(path):
-        return False
+    width, height = get_video_resolution(input_path)
+    if not width or not height:
+        logging.error(f"Skipping {input_path}: Unable to determine resolution")
+        return
+    is_4k = (width >= 3840) or (height >= 2160)
 
-    data = None
+    dir_path, base, ext = split_file_name(input_path)
+    output_path_4k = os.path.join(dir_path, f"{base} - 4k{ext}")
+    output_path_1080p = os.path.join(dir_path, f"{base} - 1080p{ext}")
+
+    default_path, scaled_path = (
+        output_path_4k, output_path_1080p) if is_4k else (
+        output_path_1080p, "")
+    do_transcoding = not os.path.exists(default_path)
+    do_scaled_transcoding = is_4k and not os.path.exists(scaled_path)
+
+    # process subtitles first to WA Jellyfin-ffmpeg issue
+    subs = process_subtitles(input_path)
+    # target bit-rate
+    orig_bitrate = get_video_bitrate(input_path)
+    bitrate = MAX_BITRATE if orig_bitrate > MAX_BITRATE else orig_bitrate
+    logging.info(f"Target bitrate: {bitrate}")
+    source_codec = get_video_codec(input_path)
+    logging.info(f"Source codec: {source_codec}")
+    params = {'subs': subs, 'bitrate': bitrate, 'source_codec': source_codec}
+
+    if not do_transcoding and not do_scaled_transcoding:
+        logging.info(f"Skipping {input_path}: Already processed")
+        return
+
+    is_tagged = input_path != os.path.join(dir_path, f"{base}{ext}")
+    if not is_tagged:
+        # add special tag to original video
+        input_path_orig = os.path.join(dir_path, f"{base} - orig{ext}")
+        logging.info(f"[MOVE] {input_path} -> {input_path_orig}")
+        shutil.move(input_path, input_path_orig)
+        input_path = input_path_orig
+
+    if do_transcoding:
+        # only rename original file if nothing to be changed
+        if RENAME_ONLY and source_codec in ['h264', 'hevc', 'av1'] and len(subs['files']) == 0 and bitrate == orig_bitrate:
+            logging.info(f"Transcoding without rescale is excessive")
+            if input_path != default_path:
+                logging.info(f"[MOVE] {input_path} -> {default_path}")
+                shutil.move(input_path, default_path)
+                input_path = default_path
+        else:
+            logging.info("Transcoding without rescale")
+            transcode_through_temp(input_path, default_path, ext, params)
+        modify_permissions(default_path)
+
+    if do_scaled_transcoding:
+        logging.info("Transcoding with rescale")
+        scaled_width, scaled_height = calculate_scaled_resolution(
+            width, height)
+        logging.info(f"Scaled resolution: {scaled_width}x{scaled_height}")
+        # recaclculate bitrate based on scaled resolution
+        scaled_bitrate = math.ceil(
+            bitrate * scaled_width * scaled_height / (width * height))
+        logging.info(f"Scaled bitrate: {scaled_bitrate}")
+        params['bitrate'] = scaled_bitrate
+        params['resolution'] = [scaled_width, scaled_height]
+        transcode_through_temp(input_path, scaled_path, ext, params)
+        modify_permissions(scaled_path)
+
+    if DELETE_ORIGINAL_FILE and input_path != default_path:
+        # remove original video file
+        os.remove(input_path)
+        logging.info(f"Cleaned up original file: {input_path}")
+
+    # Delete all subtitle files
+    if subs['files']:
+        for sub in subs['files']:
+            os.remove(sub)
+        logging.info("Cleaned up subtitles")
+
+
+def modify_permissions(file_path):
+    permissions = 0o644
+    os.chmod(file_path, permissions)
+    uid = 1000
+    gid = 1000
+    os.chown(file_path, uid, gid)
+
+
+def is_video(path):
+    """Checks via mediainfo: frame count should be greater then zero."""
     try:
-        cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_type:format=duration",
-            "-of", "json",
-            path
-        ]
-        logging.info(f"[CMD] is_4k_video: {' '.join(cmd)}")
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
-        data = json.loads(output)
+        # Run the mediainfo command
+        cmd = ["mediainfo", "--Output=Video;%FrameCount%", path]
+        logging.info(f"[CMD] is_video: {' '.join(cmd)}")
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, check=True)
+
+        # Retrieve the frame count from the output
+        frame_count = result.stdout.strip()
+
+        # If frame count is a valid integer and greater than 0, it's a video
+        if frame_count.isdigit() and int(frame_count) > 0:
+            return True
     except Exception as e:
-        logging.debug(f"Error in is_4k_video for {path}: {e}")
-        return False
+        logging.debug(f"Error in is_video for {path}: {e}")
 
-    if "streams" not in data or not data["streams"]:
-        logging.info(f"No 'streams' in ffprobe response for file: {path}")
-        return False
-    if "format" not in data or not data["format"]:
-        logging.info(f"No 'format' in ffprobe response for file: {path}")
-        return False
-
-    stream = data["streams"][0]
-    if stream.get("codec_type", "") != "video":
-        logging.info(f"Codec type not video for file: {path}")
-        return False
-    duration = float(data.get("format", {}).get("duration", 0.0))
-    if duration <= 1:
-        logging.info(f"Duration less then 1s for file: {path}")
-        return False
-
-    width, height = get_video_resolution(path)
-    return (width >= 3840 or height >= 2160)
+    return False
 
 
-def get_video_codec(input_file):
+def get_video_bitrate(video_path):
+    """
+    Get overall bitrate via mediainfo
+    """
+    try:
+        # Run the mediainfo command
+        cmd = ["mediainfo", "--Output=General;%OverallBitRate%", video_path]
+        logging.info(f"[CMD] get_video_bitrate: {' '.join(cmd)}")
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, check=True)
+        # Retrieve the bit-rate from the output
+        bitrate = result.stdout.strip()
+
+        if bitrate.isdigit():
+            return int(bitrate)
+    except Exception as e:
+        logging.debug(f"Error in get_video_bitrate for {video_path}: {e}")
+
+    logging.debug(f"Could not get bit-rate for {video_path}, using MAX_BITRATE")
+    return MAX_BITRATE
+
+
+def get_video_codec(video_path):
     """
     Identify the codec (h264, hevc, av1, etc.) via ffprobe.
     """
@@ -404,13 +588,19 @@ def get_video_codec(input_file):
             "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_name",
-            "-of", "csv=p=0",
-            input_file
+            "-of", "json",
+            video_path
         ]
         logging.info(f"[CMD] get_video_codec: {' '.join(cmd)}")
-        codec = subprocess.check_output(cmd).decode().strip().lower()
-        return codec
-    except:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True)
+        stream = json.loads(result.stdout).get("streams", [ dict() ])[0]
+        return stream.get("codec_name", "other")
+    except Exception as e:
+        logging.debug(f"Error in get_video_codec for {video_path}: {e}")
         return "other"
 
 
@@ -427,122 +617,158 @@ def calculate_scaled_resolution(width, height, target_width=1920):
 #  FFmpeg command-building logic for AMD vs. Rockchip + fallback
 # ----------------------------------------------------------------
 
-def build_ffmpeg_command(input_file, output_file, width, height, source_codec, preserve_metadata):
+def build_ffmpeg_command(input_file, output_file, params):
     """
     Decide how to encode based on GPU_ACCEL.
     """
     if GPU_ACCEL == "amd":
-        return build_ffmpeg_command_amd(input_file, output_file, width, height, source_codec, preserve_metadata)
+        return build_ffmpeg_command_amd(input_file, output_file, params)
     elif GPU_ACCEL == "rockchip":
-        return build_ffmpeg_command_rockchip(input_file, output_file, width, height, source_codec, preserve_metadata)
+        return build_ffmpeg_command_rockchip(input_file, output_file, params)
     else:
-        logging.warning(f"Unknown GPU_ACCEL={GPU_ACCEL}. Falling back to software.")
-        target_codec = SOURCE_CODEC_TO_SOFTWARE.get(source_codec, "libx265")
-        return build_ffmpeg_command_software(input_file, output_file, width, height, target_codec, preserve_metadata)
+        logging.warning(
+            f"Unknown GPU_ACCEL={GPU_ACCEL}. Falling back to software.")
+        return build_ffmpeg_command_software(input_file, output_file, params)
 
 
-def build_ffmpeg_command_amd(input_file, output_file, width, height, source_codec, preserve_metadata):
+def build_ffmpeg_command_amd(input_file, output_file, params):
     """
     AMD VAAPI: can do h264_vaapi, hevc_vaapi, av1_vaapi, etc.
     """
+    bitrate = params.get('bitrate')
+    subs = params.get('subs')
+    resolution = params.get('resolution')
+    source_codec = params.get('source_codec')
+
     if source_codec == "h264":
-        encoder = f"h264_vaapi -qp {QP_H264}"
+        encoder = f"h264_vaapi -b:v:0 {bitrate}"
     elif source_codec == "av1":
-        encoder = f"av1_vaapi -crf {CRF_AV1} -b:v 0"
+        encoder = f"av1_vaapi -b:v:0 {bitrate}"
     else:
         # Default to HEVC VAAPI
-        encoder = f"hevc_vaapi -qp {QP_HEVC}"
+        encoder = f"hevc_vaapi -b:v:0 {bitrate}"
 
     # Hardware scaling with VAAPI
-    scaled_width, scaled_height = calculate_scaled_resolution(width, height)
-    scale_filter = f"format=nv12,hwupload,scale_vaapi=w={scaled_width}:h={scaled_height}"
+    vf = "format=nv12,hwupload"
+    if resolution:
+        width, height = resolution
+        vf += f",scale_vaapi=w={width}:h={height}"
 
-    # Metadata preservation
-    metadata_opts = ""
-    if preserve_metadata:
-        metadata_opts = "-map 0 -map_metadata 0 -c:a copy -c:s copy"
-
+    # Construct ffmpeg command line with VAAPI and scaling.
     cmd = (
-        f"ffmpeg -y "
+        f"ffmpeg -y -fix_sub_duration "
         f"-hwaccel vaapi -vaapi_device {AMD_VAAPI_DEVICE} "
         f"-i '{input_file}' "
-        f"-progress pipe:1 -nostats "
-        f"{metadata_opts} "
-        f"-vf '{scale_filter}' "
-        f"-c:v {encoder} "
-        f"'{output_file}'"
     )
+    for sub_input in subs['files']:
+        cmd += f"-i '{sub_input}' "
+    cmd += (
+        f"-vf '{vf}' "
+        f"-map_metadata 0 "
+        f"-map 0:v:0 -c:v {encoder} "
+        f"-map 0:a -c:a copy "
+    )
+    for sub_map in subs['maps']:
+        cmd += f"{sub_map} "
+    cmd += f"'{output_file}'"
+
     logging.info(f"[CMD] build_ffmpeg_command_amd: {cmd}")
     return cmd
 
 
-def build_ffmpeg_command_rockchip(input_file, output_file, width, height, source_codec, preserve_metadata):
+def build_ffmpeg_command_rockchip(input_file, output_file, params):
     """
     Rockchip RKMPP: can do h264_rkmpp, hevc_rkmpp.
-    AV1 encoding not supported (decode-only), so fallback to software if AV1 is desired.
+    AV1 encoding not supported (decode-only),
+    so fallback to software if AV1 is desired.
     """
+    bitrate = params.get('bitrate')
+    subs = params.get('subs')
+    resolution = params.get('resolution')
+    source_codec = params.get('source_codec')
+
     if source_codec == "h264":
-        encoder = f"h264_rkmpp -qp {QP_H264}"
+        encoder = f"h264_rkmpp -b:v:0 {bitrate}"
     elif source_codec == "av1":
         # Rockchip can't encode AV1 => software fallback
-        logging.info("Rockchip: Falling back to software libaom-av1 for AV1 encoding.")
-        return build_ffmpeg_command_software(input_file, output_file, width, height, "libaom-av1", preserve_metadata)
+        logging.info(
+            "Rockchip: Falling back to software libaom-av1 for AV1 encoding.")
+        return build_ffmpeg_command_software(
+            input_file, output_file, "libaom-av1", params)
     else:
         # Default to HEVC rkmpp
-        encoder = f"hevc_rkmpp -qp {QP_HEVC}"
+        encoder = f"hevc_rkmpp -b:v:0 {bitrate}"
 
-    # We'll assume software scaling for Rockchip (some SoCs might allow MPP-based scaling)
-    scaled_width, scaled_height = calculate_scaled_resolution(width, height)
-    scale_filter = f"scale={scaled_width}:{scaled_height}"
-
-    metadata_opts = ""
-    if preserve_metadata:
-        metadata_opts = "-map 0 -map_metadata 0 -c:a copy -c:s copy"
-
+    # Construct ffmpeg command line with RKMPP hardware acceleration.
     cmd = (
-        f"ffmpeg -y "
+        f"ffmpeg -y -fix_sub_duration "
+        f"-hwaccel rkmpp "
         f"-i '{input_file}' "
-        f"-progress pipe:1 -nostats "
-        f"{metadata_opts} "
-        f"-vf '{scale_filter}' "
-        f"-c:v {encoder} "
-        f"'{output_file}'"
     )
+    for sub_input in subs['files']:
+        cmd += f"-i '{sub_input}' "
+    if resolution:
+        width, height = resolution
+        cmd += f"-vf 'scale={width}:{height}' "
+    cmd += (
+        f"-map_metadata 0 "
+        f"-map 0:v:0 -c:v {encoder} "
+        f"-map 0:a -c:a copy "
+    )
+    for sub_map in subs['maps']:
+        cmd += f"{sub_map} "
+    cmd += f"'{output_file}'"
+
     logging.info(f"[CMD] build_ffmpeg_command_rockchip: {cmd}")
     return cmd
 
 
-def build_ffmpeg_command_software(input_file, output_file, width, height, target_codec, preserve_metadata):
+def build_ffmpeg_command_software(input_file, output_file, params):
     """
     Fallback software encoding (libx264, libx265, libaom-av1, etc.),
     preserving metadata/streams if requested.
     """
+    bitrate = params.get('bitrate')
+    subs = params.get('subs')
+    resolution = params.get('resolution')
+    source_codec = params.get('source_codec')
+
+    # translate source codec to SW codec
+    SOURCE_CODEC_TO_SOFTWARE = {
+        'h264': 'libx264',
+        'hevc': 'libx265',
+        'av1': 'libaom-av1'}
+    target_codec = SOURCE_CODEC_TO_SOFTWARE.get(source_codec, "undef")
+
     # Example CRF/preset choices
     if target_codec == "libx264":
-        video_quality = f"-crf {CRF_H264} -preset medium"
+        video_quality = f"-b:v:0 {bitrate}"
     elif target_codec == "libaom-av1":
         # Example: use CRF, no bitrate, moderate speed
-        video_quality = f"-crf {CRF_AV1} -b:v 0 -cpu-used 4"
+        video_quality = f"-b:v:0 {bitrate}"
     else:
         # Default to libx265
-        video_quality = f"-crf {CRF_HEVC} -preset medium"
+        video_quality = f"-b:v:0 {bitrate}"
 
-    scaled_width, scaled_height = calculate_scaled_resolution(width, height)
-    scale_filter = f"scale={scaled_width}:{scaled_height}"
-
-    metadata_opts = ""
-    if preserve_metadata:
-        metadata_opts = "-map 0 -map_metadata 0 -c:a copy -c:s copy"
-
+    # Construct the command line.
     cmd = (
-        f"ffmpeg -y "
+        f"ffmpeg -y -fix_sub_duration "
         f"-i '{input_file}' "
-        f"-progress pipe:1 -nostats "
-        f"{metadata_opts} "
-        f"-vf '{scale_filter}' "
-        f"-c:v {target_codec} {video_quality} "
-        f"'{output_file}'"
     )
+    for sub_input in subs['files']:
+        cmd += f"-i '{sub_input}' "
+    if resolution:
+        width, height = resolution
+        cmd += f"-vf 'scale={width}:{height}' "
+    cmd += (
+        f"-map_metadata 0 "
+        f"-map 0:v:0 -c:v {target_codec} {video_quality} "
+        f"-map 0:a -c:a copy "
+    )
+    for sub_map in subs['maps']:
+        cmd += f"{sub_map} "
+    cmd += f"'{output_file}'"
+
     logging.info(f"[CMD] build_ffmpeg_command_software: {cmd}")
     return cmd
 
@@ -571,8 +797,9 @@ def main():
     # Setup temporary files cleanup on exit
     atexit.register(cleanup_temp_files)
     # Attach signal handlers to set the terminate flag
-    signal.signal(signal.SIGTERM, signal_handler) # docker stop sends SIGTERM
-    signal.signal(signal.SIGHUP, signal_handler)  # docker kill --signal=SIGHUP sends SIGHUP
+    signal.signal(signal.SIGTERM, signal_handler)  # docker stop sends SIGTERM
+    # docker kill --signal=SIGHUP sends SIGHUP
+    signal.signal(signal.SIGHUP, signal_handler)
 
     # 1) Bulk process existing files
     process_all_existing_files()
@@ -591,7 +818,13 @@ def main():
     status_thread = threading.Thread(target=update_status, daemon=True)
     status_thread.start()
 
-    logging.info(f"Monitoring directory (recursive): {WATCH_DIRECTORY}. Press Ctrl+C to stop.")
+    # 5) Start the periodic scanner thread
+    scanner_thread = threading.Thread(target=scan_directory, daemon=True)
+    scanner_thread.start()
+
+    logging.info(
+        f"Monitoring directory (recursive): {WATCH_DIRECTORY}. "
+        f"Press Ctrl+C to stop.")
     try:
         while not terminate:
             time.sleep(1)
@@ -607,6 +840,8 @@ def main():
 
 # Global thread-safe dictionary for pending files
 pending_files = {}
+processed_files = {}
+skippable_files = {}
 pending_files_lock = threading.Lock()
 
 if __name__ == "__main__":
