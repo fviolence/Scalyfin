@@ -74,7 +74,6 @@ Optional:
 | **Variable**           | **Description**                                                                                   | **Default Value**                       |
 |------------------------|---------------------------------------------------------------------------------------------------|-----------------------------------------|
 | `AMD_DEVICE`           | Path to the AMD VAAPI device (e.g., `/dev/dri/renderD128` or `/dev/dri/renderD129`).              | Auto-detected with `/dev/dri/renderD128` as default if both present. |
-| `MAX_BITRATE`          | Sets the maximum acceptable bitrate of transcoded video in bps.                                   | 75000000 (75 Mbps) |
 | `DELETE_ORIGINAL_FILE` | Boolean flag to specify if original video should be deleted after being processed.                | True      |
 
 

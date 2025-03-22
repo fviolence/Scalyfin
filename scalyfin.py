@@ -29,8 +29,17 @@ GPU_ACCEL = os.getenv("GPU_ACCEL", "undef").lower()
 # "/dev/dri/renderD128" or "/dev/dri/renderD129" expected
 AMD_VAAPI_DEVICE = os.getenv("AMD_DEVICE", "")
 
-# Quality parameters
-MAX_BITRATE = int(os.getenv("MAX_BITRATE", "75000000"))
+# Max bit-rates map
+MAX_BITRATES_MAP = {
+    '30fps': {
+        '1080p': 6500000,
+        '4k': 49000000,
+    },
+    '60fps': {
+        '1080p': 10800000,
+        '4k': 75000000,
+    },
+}
 
 # Toggle to remove/leave original file after conversion (default: yes)
 DELETE_ORIGINAL_FILE = os.getenv("DELETE_ORIGINAL_FILE", "yes").lower() in ("true", "1", "yes")
@@ -64,7 +73,6 @@ def setup_logging():
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     logging.info(f"GPU_ACCEL set to: {GPU_ACCEL}")
     logging.info(f"Watching directory: {WATCH_DIRECTORY}")
-    logging.info(f"Maximal bit-rate: {MAX_BITRATE}")
 
 
 # Healthcheck handler
@@ -468,10 +476,19 @@ def process_file(input_path):
 
     # process subtitles first to WA Jellyfin-ffmpeg issue
     subs = process_subtitles(input_path)
-    # target bit-rate
-    orig_bitrate = get_video_bitrate(input_path)
-    bitrate = MAX_BITRATE if orig_bitrate > MAX_BITRATE else orig_bitrate
-    logging.info(f"Target bitrate: {bitrate}")
+    # video frame-rate
+    video_fps = get_video_fps(input_path)
+    logging.info(f"Video fps: {video_fps}")
+    # max bitrate of FPS and resolution
+    fps_key = '60fps' if video_fps >= 35.0 else '30fps'
+    resol_key = '4k' if is_4k else '1080p'
+    max_bitrate = MAX_BITRATES_MAP[fps_key][resol_key]
+    # original video bit-rate
+    orig_bitrate = get_video_bitrate(input_path, max_bitrate)
+    logging.info(f"Video bitrate: {orig_bitrate}")
+    # target non-scale bit-rate
+    bitrate = max_bitrate if orig_bitrate > max_bitrate else orig_bitrate
+    logging.info(f"Target non-scale bitrate: {bitrate}")
     source_codec = get_video_codec(input_path)
     logging.info(f"Source codec: {source_codec}")
     params = {'subs': subs, 'bitrate': bitrate, 'source_codec': source_codec}
@@ -556,7 +573,28 @@ def is_video(path):
     return False
 
 
-def get_video_bitrate(video_path):
+def get_video_fps(video_path):
+    """
+    Get overall FPS via mediainfo
+    """
+    try:
+        # Run the mediainfo command
+        cmd = ["mediainfo", "--Output=General;%FrameRate%", video_path]
+        logging.info(f"[CMD] get_video_fps: {' '.join(cmd)}")
+        result = subprocess.run(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, check=True)
+        # Retrieve the frame-rate from the output
+        fps_str = result.stdout.strip()
+        fps = float(fps_str)
+        return fps
+    except Exception as e:
+        logging.debug(f"Error in get_video_fps for {video_path}: {e}")
+
+    logging.debug(f"Could not get FPS for {video_path}, using 60.0 by default")
+    return 60.0
+
+
+def get_video_bitrate(video_path, max_bitrate):
     """
     Get overall bitrate via mediainfo
     """
@@ -574,8 +612,11 @@ def get_video_bitrate(video_path):
     except Exception as e:
         logging.debug(f"Error in get_video_bitrate for {video_path}: {e}")
 
-    logging.debug(f"Could not get bit-rate for {video_path}, using MAX_BITRATE")
-    return MAX_BITRATE
+    logging.debug(
+        f"Could not get bit-rate for {video_path}, "
+        f"using MAX_BITRATE: {max_bitrate}"
+    )
+    return max_bitrate
 
 
 def get_video_codec(video_path):
@@ -670,7 +711,10 @@ def build_ffmpeg_command_amd(input_file, output_file, params):
     )
     for sub_map in subs['maps']:
         cmd += f"{sub_map} "
-    cmd += f"'{output_file}'"
+    cmd += (
+        f"-movflags +faststart "
+        f"'{output_file}'"
+    )
 
     logging.info(f"[CMD] build_ffmpeg_command_amd: {cmd}")
     return cmd
@@ -717,7 +761,10 @@ def build_ffmpeg_command_rockchip(input_file, output_file, params):
     )
     for sub_map in subs['maps']:
         cmd += f"{sub_map} "
-    cmd += f"'{output_file}'"
+    cmd += (
+        f"-movflags +faststart "
+        f"'{output_file}'"
+    )
 
     logging.info(f"[CMD] build_ffmpeg_command_rockchip: {cmd}")
     return cmd
@@ -767,7 +814,10 @@ def build_ffmpeg_command_software(input_file, output_file, params):
     )
     for sub_map in subs['maps']:
         cmd += f"{sub_map} "
-    cmd += f"'{output_file}'"
+    cmd += (
+        f"-movflags +faststart "
+        f"'{output_file}'"
+    )
 
     logging.info(f"[CMD] build_ffmpeg_command_software: {cmd}")
     return cmd

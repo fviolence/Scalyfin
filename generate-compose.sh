@@ -37,9 +37,6 @@ else
   exit 1
 fi
 
-if [ "$MAX_BITRATE" ]; then
-  MAX_BITRATE_ENV="- MAX_BITRATE=$MAX_BITRATE"
-fi
 if [ "$DELETE_ORIGINAL_FILE" ]; then
   DELETE_ORIGINAL_FILE_ENV="- DELETE_ORIGINAL_FILE='$DELETE_ORIGINAL_FILE'"
 fi
@@ -84,7 +81,6 @@ services:
     environment:
       - GPU_ACCEL=${GPU_ACCEL}
       ${AMD_DEVICE_ENV}
-      ${MAX_BITRATE_ENV}
       ${DELETE_ORIGINAL_FILE_ENV}
     volumes:
       - ${WATCH_DIRECTORY}:/watch_dir
