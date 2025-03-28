@@ -2,7 +2,8 @@
 
 # Set default values for environment variables if not provided
 GPU_ACCEL=${GPU_ACCEL:-amd}
-WATCH_DIRECTORY=${WATCH_DIRECTORY:-/home/cookie/scaler/watch_dir}
+WATCH_DIR=${WATCH_DIR:-/watch_dir}
+OUTPUT_DIR=${OUTPUT_DIR:-/output_dir}
 
 # Detect AMD VAAPI device if AMD_DEVICE is not set
 detect_amd_device() {
@@ -83,7 +84,8 @@ services:
       ${AMD_DEVICE_ENV}
       ${DELETE_ORIGINAL_FILE_ENV}
     volumes:
-      - ${WATCH_DIRECTORY}:/watch_dir
+      - ${WATCH_DIR}:/watch_dir
+      - ${OUTPUT_DIR}:/output_dir
     devices:
       ${DEVICES}
     ${CPU_SHARES_SET}
