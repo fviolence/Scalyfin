@@ -19,7 +19,8 @@ from watchdog.events import FileSystemEventHandler
 from pysubparser import parser, writer
 
 # ====================== CONFIGURATION =======================
-WATCH_DIRECTORY = os.getenv("WATCH_DIRECTORY", "/watch_dir")
+WATCH_DIR = os.path.abspath(os.getenv("WATCH_DIR", "/watch_dir"))
+OUTPUT_DIR = os.path.abspath(os.getenv("OUTPUT_DIR", "/output_dir"))
 SCAN_INTERVAL = 60                 # Scan interval in seconds
 
 # Toggle for GPU acceleration backends: "amd" or "rockchip"
@@ -32,11 +33,11 @@ AMD_VAAPI_DEVICE = os.getenv("AMD_DEVICE", "")
 # Max bit-rates map
 MAX_BITRATES_MAP = {
     '30fps': {
-        '1080p': 6500000,
+        '1080p': 12000000,
         '4k': 49000000,
     },
     '60fps': {
-        '1080p': 10800000,
+        '1080p': 18000000,
         '4k': 75000000,
     },
 }
@@ -72,7 +73,7 @@ terminate = False
 def setup_logging():
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     logging.info(f"GPU_ACCEL set to: {GPU_ACCEL}")
-    logging.info(f"Watching directory: {WATCH_DIRECTORY}")
+    logging.info(f"Watching directory: {WATCH_DIR}")
 
 
 # Healthcheck handler
@@ -148,7 +149,7 @@ class NewcomersHandler(FileSystemEventHandler):
 def scan_directory():
     """Periodically scan the directory for new files."""
     while True:
-        for root, _, files in os.walk(WATCH_DIRECTORY):
+        for root, _, files in os.walk(WATCH_DIR):
             for file in files:
                 file_path = os.path.join(root, file)
                 if is_new_file(file_path):
@@ -464,9 +465,13 @@ def process_file(input_path):
         return
     is_4k = (width >= 3840) or (height >= 2160)
 
+    # Using dir_path and then replacing the root directory to preserve subdirectory structure
     dir_path, base, ext = split_file_name(input_path)
-    output_path_4k = os.path.join(dir_path, f"{base} - 4k{ext}")
-    output_path_1080p = os.path.join(dir_path, f"{base} - 1080p{ext}")
+    output_dir_path = dir_path.replace(WATCH_DIR, OUTPUT_DIR)
+    os.makedirs(output_dir_path, exist_ok=True)
+    modify_permissions(output_dir_path)
+    output_path_4k = os.path.join(output_dir_path, f"{base} - 4k{ext}")
+    output_path_1080p = os.path.join(output_dir_path, f"{base} - 1080p{ext}")
 
     default_path, scaled_path = (
         output_path_4k, output_path_1080p) if is_4k else (
@@ -496,14 +501,6 @@ def process_file(input_path):
     if not do_transcoding and not do_scaled_transcoding:
         logging.info(f"Skipping {input_path}: Already processed")
         return
-
-    is_tagged = input_path != os.path.join(dir_path, f"{base}{ext}")
-    if not is_tagged:
-        # add special tag to original video
-        input_path_orig = os.path.join(dir_path, f"{base} - orig{ext}")
-        logging.info(f"[MOVE] {input_path} -> {input_path_orig}")
-        shutil.move(input_path, input_path_orig)
-        input_path = input_path_orig
 
     if do_transcoding:
         # only rename original file if nothing to be changed
@@ -536,6 +533,20 @@ def process_file(input_path):
         # remove original video file
         os.remove(input_path)
         logging.info(f"Cleaned up original file: {input_path}")
+        # delete parent directories if empty
+        parent_path = os.path.dirname(input_path)
+        while os.path.normpath(parent_path) != os.path.normpath(WATCH_DIR):
+            if not os.path.isdir(parent_path):
+                break
+            if len(os.listdir(parent_path)) == 0:
+                try:
+                    os.rmdir(parent_path)
+                except Exception as e:
+                    logging.debug(f"Error removing directory '{parent_path}': {e}")
+                    break
+            else:
+                break
+            parent_path = os.path.dirname(parent_path)
 
     # Delete all subtitle files
     if subs['files']:
@@ -545,7 +556,7 @@ def process_file(input_path):
 
 
 def modify_permissions(file_path):
-    permissions = 0o644
+    permissions = 0o755 if os.path.isdir(file_path) else 0o644
     os.chmod(file_path, permissions)
     uid = 1000
     gid = 1000
@@ -699,7 +710,7 @@ def build_ffmpeg_command_amd(input_file, output_file, params):
     cmd = (
         f"ffmpeg -y -fix_sub_duration "
         f"-hwaccel vaapi -vaapi_device {AMD_VAAPI_DEVICE} "
-        f"-i '{input_file}' "
+        f"-i \"{input_file}\" "
     )
     for sub_input in subs['files']:
         cmd += f"-i '{sub_input}' "
@@ -713,7 +724,7 @@ def build_ffmpeg_command_amd(input_file, output_file, params):
         cmd += f"{sub_map} "
     cmd += (
         f"-movflags +faststart "
-        f"'{output_file}'"
+        f"\"{output_file}\""
     )
 
     logging.info(f"[CMD] build_ffmpeg_command_amd: {cmd}")
@@ -747,7 +758,7 @@ def build_ffmpeg_command_rockchip(input_file, output_file, params):
     cmd = (
         f"ffmpeg -y -fix_sub_duration "
         f"-hwaccel rkmpp "
-        f"-i '{input_file}' "
+        f"-i \"{input_file}\" "
     )
     for sub_input in subs['files']:
         cmd += f"-i '{sub_input}' "
@@ -763,7 +774,7 @@ def build_ffmpeg_command_rockchip(input_file, output_file, params):
         cmd += f"{sub_map} "
     cmd += (
         f"-movflags +faststart "
-        f"'{output_file}'"
+        f"\"{output_file}\""
     )
 
     logging.info(f"[CMD] build_ffmpeg_command_rockchip: {cmd}")
@@ -800,7 +811,7 @@ def build_ffmpeg_command_software(input_file, output_file, params):
     # Construct the command line.
     cmd = (
         f"ffmpeg -y -fix_sub_duration "
-        f"-i '{input_file}' "
+        f"-i \"{input_file}\" "
     )
     for sub_input in subs['files']:
         cmd += f"-i '{sub_input}' "
@@ -816,7 +827,7 @@ def build_ffmpeg_command_software(input_file, output_file, params):
         cmd += f"{sub_map} "
     cmd += (
         f"-movflags +faststart "
-        f"'{output_file}'"
+        f"\"{output_file}\""
     )
 
     logging.info(f"[CMD] build_ffmpeg_command_software: {cmd}")
@@ -832,7 +843,7 @@ def process_all_existing_files():
     Scans the watch directory at startup; queues any video for stability checks
     (unless its 1080p output already exists).
     """
-    for root, dirs, files in os.walk(WATCH_DIRECTORY):
+    for root, dirs, files in os.walk(WATCH_DIR):
         for f in files:
             path = os.path.join(root, f)
             add_file_to_pending(path)
@@ -857,7 +868,7 @@ def main():
     # 2) Start watchdog
     event_handler = NewcomersHandler()
     observer = Observer()
-    observer.schedule(event_handler, WATCH_DIRECTORY, recursive=True)
+    observer.schedule(event_handler, WATCH_DIR, recursive=True)
     observer.start()
 
     # 3) Start stability checker thread
@@ -873,7 +884,7 @@ def main():
     scanner_thread.start()
 
     logging.info(
-        f"Monitoring directory (recursive): {WATCH_DIRECTORY}. "
+        f"Monitoring directory (recursive): {WATCH_DIR}. "
         f"Press Ctrl+C to stop.")
     try:
         while not terminate:

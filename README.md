@@ -58,7 +58,7 @@ for dev in dri dma_heap mali0 rga mpp_service iep mpp-service vpu_service vpu-se
 
 ## Generate compose and deploy
 ```
-GPU_ACCEL=amd WATCH_DIRECTORY=/path/to/watch ./generate-compose.sh
+GPU_ACCEL=amd WATCH_DIR=/path/to/watch OUTPUT_DIR=/path/to/output ./generate-compose.sh
 docker compose up --build --force-recreate --no-deps -d
 ```
 ##### NOTE: Compose file is gernerated with user set as root by default, adjust to your need.
@@ -68,7 +68,8 @@ Mandatory:
 | **Variable**           | **Description**                                                                                   |
 |------------------------|---------------------------------------------------------------------------------------------------|
 | `GPU_ACCEL`            | Specifies the GPU backend to use. Supported values: `amd` (for AMD GPUs) or `rockchip` (for Rockchip devices). |
-| `WATCH_DIRECTORY`      | Directory to monitor for the videos. Applicable only to generator.                                |
+| `WATCH_DIR`            | Directory to monitor for the videos.                                                              |
+| `OUTPUT_DIR`           | Directory to output the videos.                                                                   |
 
 Optional:
 | **Variable**           | **Description**                                                                                   | **Default Value**                       |
