@@ -269,10 +269,8 @@ def is_file_in_use(path):
     If returncode == 0 AND there's output, it's open. Otherwise, not in use.
     """
     try:
-        result = subprocess.run(["lsof", "--", path],
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True)
+        result = subprocess.run(["lsof", "--", path], check=False, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if result.returncode == 0 and result.stdout.strip():
             return True
         return False
@@ -296,9 +294,9 @@ def get_video_resolution(video_path):
             video_path
         ]
         logging.info(f"[CMD] get_video_resolution: {' '.join(cmd)}")
-        output = subprocess.check_output(
-            cmd, stderr=subprocess.STDOUT).decode()
-        stream = json.loads(output).get("streams", [ dict() ])[0]
+        result = subprocess.run(cmd, check=True, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stream = json.loads(result.stdout).get("streams", [ dict() ])[0]
         width = int(stream.get("width", 0))
         height = int(stream.get("height", 0))
         logging.info(
@@ -314,7 +312,7 @@ def render_file(input_path, output_path, params):
     ffmpeg_cmd = build_ffmpeg_command(input_path, output_path, params)
 
     try:
-        subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
+        subprocess.run(ffmpeg_cmd, check=True, text=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except subprocess.CalledProcessError as e:
@@ -329,7 +327,7 @@ def render_file(input_path, output_path, params):
             input_path, output_path, params)
 
         try:
-            subprocess.run(ffmpeg_cmd, shell=True, check=True, text=True,
+            subprocess.run(ffmpeg_cmd, check=True, text=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             return True
         except subprocess.CalledProcessError as e:
@@ -351,11 +349,8 @@ def get_streams_info(video_path, stream_type="s"):
         "-of", "json", video_path
     ]
     logging.info(f"[CMD] get_stream_info: {' '.join(cmd)}")
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True)
+    result = subprocess.run(cmd, check=True, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return json.loads(result.stdout).get("streams", [])
 
 
@@ -386,16 +381,13 @@ def transcode_through_temp(input_path, output_path, ext, params):
 
 def extract_subtitles(video_path, streams):
     """Extract subtitle streams using ffmpeg."""
-    cmd = (
-        f"ffmpeg -y "
-        f"-i '{video_path}' "
-    )
+    cmd = ["ffmpeg", "-y", "-i", video_path]
     for stream in streams:
         index = stream['index']
         output_path = stream['orig_subs']
-        cmd += f"-map 0:s:{index} '{output_path}' "
-    logging.info(f"[CMD] extract_subtitles: {cmd}")
-    subprocess.run(cmd, shell=True, check=True, text=True,
+        cmd += ["-map", f"0:s:{index}", output_path]
+    logging.info(f"[CMD] extract_subtitles: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True, text=True,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
@@ -421,21 +413,22 @@ def process_subtitles(input_path):
             file_index = len(streams_to_extract)  # counts from 1
             lang = stream['tags']['language']
             title = stream['tags']['title']
-            subtitle_maps.append(
-                f"-map {file_index} "
-                f"-c:s:{index} srt "
-                f"-metadata:s:s:{index} language={lang} "
-                f"-metadata:s:s:{index} title='{title}'")
+            subtitle_maps.append([
+                f"-map", f"{file_index}",
+                f"-c:s:{index}", "srt",
+                f"-metadata:s:s:{index}", f"language={lang}",
+                f"-metadata:s:s:{index}", f"title='{title}'",
+            ])
         else:
             # codec copied as is
-            subtitle_maps.append(f"-map 0:s:{index} -c:s:{index} copy")
+            subtitle_maps.append(["-map", f"0:s:{index}", f"-c:s:{index}", "copy"])
 
     if len(streams_to_extract) == 0:
         if subtitle_maps:
             logging.info(
                 f"Found no subtitle streams to convert. "
                 f"Coping all subtitles as is")
-            return {'files': [], 'maps': ["-map 0:s -c:s copy"]}
+            return {'files': [], 'maps': [["-map", "0:s", "-c:s", "copy"]]}
         else:
             logging.info("Found no subtitle streams found at all")
             return {'files': [], 'maps': []}
@@ -569,8 +562,8 @@ def is_video(path):
         # Run the mediainfo command
         cmd = ["mediainfo", "--Output=Video;%FrameCount%", path]
         logging.info(f"[CMD] is_video: {' '.join(cmd)}")
-        result = subprocess.run(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, check=True)
+        result = subprocess.run(cmd, check=True, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # Retrieve the frame count from the output
         frame_count = result.stdout.strip()
@@ -592,8 +585,8 @@ def get_video_fps(video_path):
         # Run the mediainfo command
         cmd = ["mediainfo", "--Output=General;%FrameRate%", video_path]
         logging.info(f"[CMD] get_video_fps: {' '.join(cmd)}")
-        result = subprocess.run(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, check=True)
+        result = subprocess.run(cmd, check=True, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # Retrieve the frame-rate from the output
         fps_str = result.stdout.strip()
         fps = float(fps_str)
@@ -613,8 +606,8 @@ def get_video_bitrate(video_path, max_bitrate):
         # Run the mediainfo command
         cmd = ["mediainfo", "--Output=General;%OverallBitRate%", video_path]
         logging.info(f"[CMD] get_video_bitrate: {' '.join(cmd)}")
-        result = subprocess.run(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, check=True)
+        result = subprocess.run(cmd, check=True, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # Retrieve the bit-rate from the output
         bitrate = result.stdout.strip()
 
@@ -644,11 +637,8 @@ def get_video_codec(video_path):
             video_path
         ]
         logging.info(f"[CMD] get_video_codec: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True)
+        result = subprocess.run(cmd, check=True, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stream = json.loads(result.stdout).get("streams", [ dict() ])[0]
         return stream.get("codec_name", "other")
     except Exception as e:
@@ -687,18 +677,19 @@ def build_ffmpeg_command_amd(input_file, output_file, params):
     """
     AMD VAAPI: can do h264_vaapi, hevc_vaapi, av1_vaapi, etc.
     """
-    bitrate = params.get('bitrate')
+    bitrate = str(params.get('bitrate'))
     subs = params.get('subs')
     resolution = params.get('resolution')
     source_codec = params.get('source_codec')
 
+    encoder = ["-map", "0:v:0", "-c:v"]
     if source_codec == "h264":
-        encoder = f"h264_vaapi -b:v:0 {bitrate}"
+        encoder += ["h264_vaapi", "-b:v:0", bitrate]
     elif source_codec == "av1":
-        encoder = f"av1_vaapi -b:v:0 {bitrate}"
+        encoder += ["av1_vaapi", "-b:v:0", bitrate]
     else:
         # Default to HEVC VAAPI
-        encoder = f"hevc_vaapi -b:v:0 {bitrate}"
+        encoder += ["hevc_vaapi", "-b:v:0", bitrate]
 
     # Hardware scaling with VAAPI
     vf = "format=nv12,hwupload"
@@ -707,27 +698,21 @@ def build_ffmpeg_command_amd(input_file, output_file, params):
         vf += f",scale_vaapi=w={width}:h={height}"
 
     # Construct ffmpeg command line with VAAPI and scaling.
-    cmd = (
-        f"ffmpeg -y -fix_sub_duration "
-        f"-hwaccel vaapi -vaapi_device {AMD_VAAPI_DEVICE} "
-        f"-i \"{input_file}\" "
-    )
+    cmd = [
+        "ffmpeg", "-y", "-fix_sub_duration",
+        "-hwaccel", "vaapi", "-vaapi_device", AMD_VAAPI_DEVICE,
+        "-i", input_file,
+    ]
     for sub_input in subs['files']:
-        cmd += f"-i '{sub_input}' "
-    cmd += (
-        f"-vf '{vf}' "
-        f"-map_metadata 0 "
-        f"-map 0:v:0 -c:v {encoder} "
-        f"-map 0:a -c:a copy "
-    )
+        cmd += ["-i", sub_input]
+    cmd += ["-vf", vf, "-map_metadata", "0"]
+    cmd += encoder
+    cmd += ["-map", "0:a", "-c:a", "copy"]
     for sub_map in subs['maps']:
-        cmd += f"{sub_map} "
-    cmd += (
-        f"-movflags +faststart "
-        f"\"{output_file}\""
-    )
+        cmd += sub_map
+    cmd += ["-movflags", "+faststart", output_file]
 
-    logging.info(f"[CMD] build_ffmpeg_command_amd: {cmd}")
+    logging.info(f"[CMD] build_ffmpeg_command_amd: {' '.join(cmd)}")
     return cmd
 
 
@@ -737,13 +722,14 @@ def build_ffmpeg_command_rockchip(input_file, output_file, params):
     AV1 encoding not supported (decode-only),
     so fallback to software if AV1 is desired.
     """
-    bitrate = params.get('bitrate')
+    bitrate = str(params.get('bitrate'))
     subs = params.get('subs')
     resolution = params.get('resolution')
     source_codec = params.get('source_codec')
 
+    encoder = ["-map", "0:v:0", "-c:v"]
     if source_codec == "h264":
-        encoder = f"h264_rkmpp -b:v:0 {bitrate}"
+        encoder += ["h264_rkmpp", "-b:v:0", bitrate]
     elif source_codec == "av1":
         # Rockchip can't encode AV1 => software fallback
         logging.info(
@@ -752,32 +738,27 @@ def build_ffmpeg_command_rockchip(input_file, output_file, params):
             input_file, output_file, "libaom-av1", params)
     else:
         # Default to HEVC rkmpp
-        encoder = f"hevc_rkmpp -b:v:0 {bitrate}"
+        encoder += ["hevc_rkmpp", "-b:v:0", bitrate]
 
     # Construct ffmpeg command line with RKMPP hardware acceleration.
-    cmd = (
-        f"ffmpeg -y -fix_sub_duration "
-        f"-hwaccel rkmpp "
-        f"-i \"{input_file}\" "
-    )
+    cmd = [
+        "ffmpeg", "-y", "-fix_sub_duration",
+        "-hwaccel", "rkmpp",
+        "-i", input_file,
+    ]
     for sub_input in subs['files']:
-        cmd += f"-i '{sub_input}' "
+        cmd += ["-i", sub_input]
     if resolution:
         width, height = resolution
-        cmd += f"-vf 'scale={width}:{height}' "
-    cmd += (
-        f"-map_metadata 0 "
-        f"-map 0:v:0 -c:v {encoder} "
-        f"-map 0:a -c:a copy "
-    )
+        cmd += ["-vf", f"scale={width}:{height}"]
+    cmd += ["-map_metadata", "0"]
+    cmd += encoder
+    cmd += ["-map", "0:a", "-c:a", "copy"]
     for sub_map in subs['maps']:
-        cmd += f"{sub_map} "
-    cmd += (
-        f"-movflags +faststart "
-        f"\"{output_file}\""
-    )
+        cmd += sub_map
+    cmd += ["-movflags", "+faststart", output_file]
 
-    logging.info(f"[CMD] build_ffmpeg_command_rockchip: {cmd}")
+    logging.info(f"[CMD] build_ffmpeg_command_rockchip: {' '.join(cmd)}")
     return cmd
 
 
@@ -786,7 +767,7 @@ def build_ffmpeg_command_software(input_file, output_file, params):
     Fallback software encoding (libx264, libx265, libaom-av1, etc.),
     preserving metadata/streams if requested.
     """
-    bitrate = params.get('bitrate')
+    bitrate = str(params.get('bitrate'))
     subs = params.get('subs')
     resolution = params.get('resolution')
     source_codec = params.get('source_codec')
@@ -797,40 +778,26 @@ def build_ffmpeg_command_software(input_file, output_file, params):
         'hevc': 'libx265',
         'av1': 'libaom-av1'}
     target_codec = SOURCE_CODEC_TO_SOFTWARE.get(source_codec, "undef")
-
-    # Example CRF/preset choices
-    if target_codec == "libx264":
-        video_quality = f"-b:v:0 {bitrate}"
-    elif target_codec == "libaom-av1":
-        # Example: use CRF, no bitrate, moderate speed
-        video_quality = f"-b:v:0 {bitrate}"
-    else:
-        # Default to libx265
-        video_quality = f"-b:v:0 {bitrate}"
+    video_quality = ["-map", "0:v:0", "-c:v", target_codec, "-b:v:0", bitrate]
 
     # Construct the command line.
-    cmd = (
-        f"ffmpeg -y -fix_sub_duration "
-        f"-i \"{input_file}\" "
-    )
+    cmd = [
+        "ffmpeg", "-y", "-fix_sub_duration",
+        "-i", input_file,
+    ]
     for sub_input in subs['files']:
-        cmd += f"-i '{sub_input}' "
+        cmd += ["-i", sub_input]
     if resolution:
         width, height = resolution
-        cmd += f"-vf 'scale={width}:{height}' "
-    cmd += (
-        f"-map_metadata 0 "
-        f"-map 0:v:0 -c:v {target_codec} {video_quality} "
-        f"-map 0:a -c:a copy "
-    )
+        cmd += ["-vf", f"scale={width}:{height}"]
+    cmd += ["-map_metadata", "0"]
+    cmd += video_quality
+    cmd += ["-map", "0:a", "-c:a", "copy"]
     for sub_map in subs['maps']:
-        cmd += f"{sub_map} "
-    cmd += (
-        f"-movflags +faststart "
-        f"\"{output_file}\""
-    )
+        cmd += sub_map
+    cmd += ["-movflags", "+faststart", output_file]
 
-    logging.info(f"[CMD] build_ffmpeg_command_software: {cmd}")
+    logging.info(f"[CMD] build_ffmpeg_command_software: {' '.join(cmd)}")
     return cmd
 
 
