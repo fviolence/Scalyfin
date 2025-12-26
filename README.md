@@ -72,10 +72,11 @@ Mandatory:
 | `OUTPUT_DIR`           | Directory to output the videos.                                                                   |
 
 Optional:
-| **Variable**           | **Description**                                                                                   | **Default Value**                       |
-|------------------------|---------------------------------------------------------------------------------------------------|-----------------------------------------|
-| `AMD_DEVICE`           | Path to the AMD VAAPI device (e.g., `/dev/dri/renderD128` or `/dev/dri/renderD129`).              | Auto-detected with `/dev/dri/renderD128` as default if both present. |
-| `DELETE_ORIGINAL_FILE` | Boolean flag to specify if original video should be deleted after being processed.                | True      |
+| **Variable**           | **Description**                                                                               | **Default Value**                       |
+|------------------------|-----------------------------------------------------------------------------------------------|-----------------------------------------|
+| `AMD_DEVICE`           | Path to the AMD VAAPI device (e.g., `/dev/dri/renderD128` or `/dev/dri/renderD129`).          | Auto-detected with `/dev/dri/renderD128` as default if both present. |
+| `DELETE_ORIGINAL_FILE` | Boolean flag to specify if original video should be deleted after being processed.            | True      |
+| `GET_BY_WITH_RENAMING` | Boolean flag to specify if transcoding without re-scale should be skipped if nothing changed. | True      |
 
 
 #### Build, push, load an image:

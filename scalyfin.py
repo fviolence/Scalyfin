@@ -44,7 +44,8 @@ MAX_BITRATES_MAP = {
 
 # Toggle to remove/leave original file after conversion (default: yes)
 DELETE_ORIGINAL_FILE = os.getenv("DELETE_ORIGINAL_FILE", "yes").lower() in ("true", "1", "yes")
-RENAME_ONLY = os.getenv("RENAME_ONLY", "no").lower() in ("true", "1", "yes")
+# Toggle to skip/force transcoding if anything changed (default: yes)
+GET_BY_WITH_RENAMING = os.getenv("GET_BY_WITH_RENAMING", "yes").lower() in ("true", "1", "yes")
 
 # Stability checking
 STABILITY_CHECK_INTERVAL = 5       # seconds between file checks
@@ -73,7 +74,12 @@ terminate = False
 def setup_logging():
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     logging.info(f"GPU_ACCEL set to: {GPU_ACCEL}")
+    if AMD_VAAPI_DEVICE:
+        logging.info(f"AMD VAAPI device: {AMD_VAAPI_DEVICE}")
     logging.info(f"Watching directory: {WATCH_DIR}")
+    logging.info(f"Output directory: {OUTPUT_DIR}")
+    logging.info(f"Get by with renaming: {GET_BY_WITH_RENAMING}")
+    logging.info(f"Delete original file: {DELETE_ORIGINAL_FILE}")
 
 
 # Healthcheck handler
@@ -497,14 +503,21 @@ def process_file(input_path):
 
     if do_transcoding:
         # only rename original file if nothing to be changed
-        if RENAME_ONLY and source_codec in ['h264', 'hevc', 'av1'] and len(subs['files']) == 0 and bitrate == orig_bitrate:
+        if GET_BY_WITH_RENAMING and source_codec in ['h264', 'hevc', 'av1'] and len(subs['files']) == 0 and bitrate == orig_bitrate:
             logging.info(f"Transcoding without rescale is excessive")
             if input_path != default_path:
                 logging.info(f"[MOVE] {input_path} -> {default_path}")
                 shutil.move(input_path, default_path)
                 input_path = default_path
         else:
-            logging.info("Transcoding without rescale")
+            if source_codec not in ['h264', 'hevc', 'av1']:
+                logging.info("Transcoding without rescale: codec changed from {source_codec}")
+            elif len(subs['files']) > 0:
+                logging.info("Transcoding without rescale: subs re-encoded")
+            elif bitrate != orig_bitrate:
+                logging.info("Transcoding without rescale: bitrate changed")
+            else:
+                logging.info("Transcoding without rescale: forced by user")
             transcode_through_temp(input_path, default_path, ext, params)
         modify_permissions(default_path)
 
@@ -820,7 +833,6 @@ def main():
     global terminate
 
     setup_logging()
-    logging.info(f"Starting with GPU_ACCEL={GPU_ACCEL}")
 
     # Setup temporary files cleanup on exit
     atexit.register(cleanup_temp_files)
